@@ -1,3 +1,11 @@
+---
+description: "mcp-tools — README"
+type: readme
+last_reviewed: 2026-06-21
+last_code_change: 2026-06-21
+status: active
+---
+
 # MCP Tools
 
 > **Владелец:** DoctorM&Ai | **Статус:** active
