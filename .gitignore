@@ -7,3 +7,6 @@ dist/
 build/
 .idea/
 .vscode/
+
+# Node
+node_modules/
