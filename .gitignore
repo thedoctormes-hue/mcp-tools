@@ -72,6 +72,9 @@ tmp/
 .backupignore
 
 # Secrets
+.env
+.env.*
+!.env.example
 *.key
 *.pem
 *.p12
