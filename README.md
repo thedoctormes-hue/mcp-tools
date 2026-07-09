@@ -1,18 +1,18 @@
 ---
 description: "mcp-tools — README"
 type: readme
-last_reviewed: 2026-06-27
-last_code_change: 2026-06-21
+last_reviewed: 2026-07-09
+last_code_change: 2026-07-09
 status: active
 ---
 
 # 🔧 MCP Tools
 
-> **Владелец:** DoctorM&Ai | **Статус:** active | **Версия:** 0.1.0
+> **Владелец:** DoctorM&Ai | **Статус:** active | **Версия:** 0.3.0
 
 ## Описание
 
-Инструменты для Model Context Protocol (MCP) — серверы и утилиты для интеграции MCP-совместимых инструментов с агентами лаборатории. Проект на стадии формирования структуры и подхода к реализации.
+Инструменты для Model Context Protocol (MCP) — серверы и утилиты для интеграции MCP-совместимых инструментов с агентами лаборатории.
 
 ## Что такое MCP
 
@@ -22,44 +22,73 @@ Model Context Protocol — протокол для предоставления 
 
 ## Стек технологий
 
-- **Bash / Python** — зависит от конкретной утилиты
+- **Python / FastMCP** — реализация MCP-серверов
 - **OpenClaw** — целевой потребитель MCP-инструментов для интеграции с агентами
 
 ## Структура проекта
 
 ```
 mcp-tools/
-├── bin/               # Исполняемые утилиты MCP-инструментов
+├── bin/               # Исполняемые MCP-серверы
 ├── docs/              # Документация
-├── tests/             # Тесты (заготовка)
-├── .github/           # CI/CD (git-гигиена)
+├── tests/             # Юнит-тесты (pytest)
+├── .github/           # CI/CD (git-гигиена + тесты)
 ├── PROJECT.md         # Описание проекта
 └── CHANGELOG.md       # История изменений
 ```
 
+## Что реализовано (Фаза 1)
+
+Готовые MCP-серверы, запускаемые как systemd-юниты по HTTP:
+
+- **apikeys-server** (`bin/apikeys-server.py`) — раздача бесплатных API ключей из free-api-hunter. HTTP на `127.0.0.1:8086`. Инструменты: `get_key`, `list_providers`, `get_provider_docs`, `check_health`. Безопасность: маскировка ключей, allowlist провайдеров, read-only.
+- **filesystem-server** (`bin/filesystem-server.py`) — read-only доступ к файлам по whitelist. HTTP на `127.0.0.1:8083`. Инструменты: `read_file`, `list_dir`, `search_files`. Разрешены только `/root/LabDoctorM/workspaces/` и `/root/LabDoctorM/projects/`, размер файла до 1MB.
+
+Оба сервера поддерживают два режима транспорта через переменную окружения `MCP_TRANSPORT`:
+
+- `MCP_TRANSPORT=http` — streamable-http (используется под systemd)
+- `MCP_TRANSPORT=stdio` (по умолчанию) — stdio для локального запуска без systemd
+
 ## Быстрый старт
 
-Проект находится на стадии формирования архитектуры и выбора инструментов для реализации.
+Запуск systemd-юнитов (HTTP) и подключение через mcporter:
 
 ```bash
 cd /root/LabDoctorM/projects/mcp-tools
-# Утилиты — в bin/
-ls bin/
+
+# Запуск systemd-юнитов
+sudo systemctl enable --now mcp-filesystem mcp-apikeys
+
+# Подключение через mcporter (HTTP)
+mcporter config add apikeys http http://127.0.0.1:8086/mcp
+mcporter config add filesystem http http://127.0.0.1:8083/mcp
 ```
 
-## Статус проекта
+Локальный запуск в stdio-режиме (без systemd):
 
-**v0.1.0 — Scaffold.** Создана базовая структура репозитория, CI, шаблоны. Реализация конкретных MCP-серверов и инструментов — в следующих релизах.
+```bash
+MCP_TRANSPORT=stdio python3 bin/apikeys-server.py
+```
 
-## Планируемые инструменты
+## Тесты и CI
 
-- MCP-сервер для работы с файловой системой
-- MCP-сервер для выполнения Git-операций
-- MCP-сервер для взаимодействия с API лаборатории
+```bash
+pip install pytest
+pytest -v
+```
+
+CI: `.github/workflows/tests.yml` запускает `pytest` на каждый push/PR. Тесты покрывают юнит-логику (`_mask_key`, выбор транспорта) и не поднимают реальные серверы.
+
+## Планируемые серверы
+
+- **memory-server** — семантический поиск по памяти лаборатории (бэклог)
+- **status-server** — приборная панель лабы: systemd, Docker, диск, инциденты, cron (бэклог)
+- **shell-server** — безопасный exec по allowlist (бэклог, опасный)
 
 ## Документация
 
 - [docs/README.md](docs/README.md)
+- [docs/apikeys-server.md](docs/apikeys-server.md)
 - [CHANGELOG.md](CHANGELOG.md)
 
 ## Лицензия
