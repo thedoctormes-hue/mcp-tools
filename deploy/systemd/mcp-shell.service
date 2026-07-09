@@ -1,0 +1,35 @@
+[Unit]
+Description=MCP Shell Server (hardened, whitelist-only, RCE surface locked down)
+After=network.target
+Documentation=file:///root/LabDoctorM/projects/mcp-tools/bin/shell_server.py
+
+[Service]
+Type=simple
+WorkingDirectory=/root/LabDoctorM/projects/mcp-tools
+ExecStart=/usr/bin/python3 /root/LabDoctorM/projects/mcp-tools/bin/shell_server.py
+Environment=MCP_TRANSPORT=http
+Environment=MCP_HOST=127.0.0.1
+Environment=MCP_PORT=8089
+Restart=always
+RestartSec=5
+User=root
+
+# --- Hardening (the "muzzle") ---
+MemoryMax=256M
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/log
+InaccessiblePaths=/root/LabDoctorM/vault
+PrivateTmp=true
+ProtectHome=false
+ProtectControlGroups=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectHostname=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoExecPaths=/tmp /home /dev/shm /run/user
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target
