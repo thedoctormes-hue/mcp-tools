@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Lab Research MCP — search & deep-research front-door for OpenClaw agents.
 
+>>> STATUS: FROZEN (2026-07-10). NOT registered in OpenClaw, systemd DISABLED.
+>>> The search/research capability now lives in the /research skill + SearXNG
+>>> gateway/orchestrator. This server is kept on disk only for a possible future
+>>> unfreeze. Do NOT rely on it; use the /research skill instead.
+
 FastMCP server exposing two tools:
   - web_search:    raw search via SearXNG (Unified Search Gateway, :8889)
   - deep_research: full deep research via the /research orchestrator

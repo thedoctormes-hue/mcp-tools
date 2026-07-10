@@ -1,4 +1,8 @@
-# Lab Research MCP Server
+# Lab Research MCP Server (FROZEN)
+
+> **FROZEN (2026-07-10).** Сервер НЕ зарегистрирован в OpenClaw, systemd отключён.
+> Capability живёт в скилле `/research` + SearXNG gateway/orchestrator.
+> Код оставлен на диске для возможной будущей разморозки. Не используй этот сервер.
 
 Нативный MCP-сервер — единая «фронт-дверь» к поиску лаборатории. Обёртка над
 **Unified Search Gateway** (SearXNG на `:8889`) и оркестратором `/research`.
