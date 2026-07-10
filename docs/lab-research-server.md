@@ -1,4 +1,4 @@
-# Lab Search MCP Server
+# Lab Research MCP Server
 
 Нативный MCP-сервер — единая «фронт-дверь» к поиску лаборатории. Обёртка над
 **Unified Search Gateway** (SearXNG на `:8889`) и оркестратором `/research`.
@@ -36,9 +36,9 @@
 
 ```bash
 # systemd (HTTP режим)
-sudo systemctl enable --now mcp-lab-search
+sudo systemctl enable --now mcp-lab-research
 # регистрация в OpenClaw
-openclaw mcp add lab-search --url http://127.0.0.1:8089/mcp --transport streamable-http
+openclaw mcp add lab-research --url http://127.0.0.1:8089/mcp --transport streamable-http
 ```
 
 ## Связь с архитектурой

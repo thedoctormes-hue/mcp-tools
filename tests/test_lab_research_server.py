@@ -8,11 +8,11 @@ from unittest import mock
 
 # Load the server module directly (it lives in ../bin relative to this file).
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SERVER_PATH = os.path.join(REPO, "bin", "lab-search-server.py")
+SERVER_PATH = os.path.join(REPO, "bin", "lab-research-server.py")
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("lab_search_server", SERVER_PATH)
+    spec = importlib.util.spec_from_file_location("lab_research_server", SERVER_PATH)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -21,7 +21,7 @@ def _load_module():
 class TestLabSearchServer(unittest.TestCase):
     def test_module_loads_and_names_server(self):
         mod = _load_module()
-        self.assertEqual(mod.mcp.name, "lab-search")
+        self.assertEqual(mod.mcp.name, "lab-research")
 
     def test_web_search_normalizes_results(self):
         mod = _load_module()

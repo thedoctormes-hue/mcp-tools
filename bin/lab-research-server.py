@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lab Search MCP — Unified Search Gateway wrapper for OpenClaw agents.
+"""Lab Research MCP — search & deep-research front-door for OpenClaw agents.
 
 FastMCP server exposing two tools:
   - web_search:    raw search via SearXNG (Unified Search Gateway, :8889)
@@ -33,7 +33,7 @@ ORCHESTRATOR = os.environ.get(
 ENGINES = os.environ.get("LABSEARCH_ENGINES", "")
 
 mcp = FastMCP(
-    "lab-search",
+    "lab-research",
     host=os.environ.get("MCP_HOST", "127.0.0.1"),
     port=int(os.environ.get("MCP_PORT", "8089")),
 )
