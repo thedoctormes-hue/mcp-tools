@@ -10,9 +10,15 @@ WorkingDirectory=/root/LabDoctorM/projects/mcp-tools
 Environment=MCP_TRANSPORT=http
 Environment=MCP_HOST=127.0.0.1
 Environment=MCP_PORT=8087
+# Надёжный lifecycle (EBSW 2026-07-11)
 Restart=always
 RestartSec=5
-MemoryMax=256M
+TimeoutStartSec=60          # FAISS 76MB + meta 32MB грузятся при старте
+TimeoutStopSec=15           # graceful shutdown
+MemoryMax=512M              # in-memory FAISS + meta + keyword-index + cache
+TasksMax=64
+# Watchdog НЕ ставим: FastMCP/uvicorn не шлёт sd_notify → systemd убил бы сервер.
+# Внутренний _watchdog в коде (60s) перезагружает индекс при падении Штрейкбрехера.
 StandardOutput=journal
 StandardError=journal
 
