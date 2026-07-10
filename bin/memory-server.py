@@ -186,7 +186,7 @@ def search_fallback(query: str, top_k: int) -> List[Dict]:
 
 
 # ── Tools ────────────────────────────────────────────────────────────────
-@mcp.tool()
+@mcp.tool(name="lab_memory_search")
 def search(query: str, top_k: int = 5, threshold: float = 0.0) -> Dict[str, Any]:
     """Semantic search over lab memory. FAISS in-memory; degrades to lab_search.py fallback."""
     t0 = time.time()
@@ -221,7 +221,7 @@ def search(query: str, top_k: int = 5, threshold: float = 0.0) -> Dict[str, Any]
     return out
 
 
-@mcp.tool()
+@mcp.tool(name="lab_memory_stats")
 def stats() -> Dict[str, Any]:
     """Index stats: size, cache hit ratio, avg latency, loaded state."""
     with _state_lock:
@@ -248,7 +248,7 @@ def stats() -> Dict[str, Any]:
     }
 
 
-@mcp.tool()
+@mcp.tool(name="lab_memory_reload")
 def reload_index() -> Dict[str, Any]:
     """Hot-reload FAISS index + meta from disk (after reindex by Штрейкбрехер)."""
     ok = load_index()
