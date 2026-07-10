@@ -1,5 +1,5 @@
 [Unit]
-Description=MCP Memory Server (labsearch wrapper, read-only)
+Description=MCP Memory Server (stateful FAISS/ONNX facade)
 Documentation=https://github.com/LabDoctorM/mcp-tools
 After=network.target
 
