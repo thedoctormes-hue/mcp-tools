@@ -51,6 +51,8 @@ _state = {
     "meta": None,
     "keyword_index": None,   # term -> list of chunk indices (fallback)
     "loaded_at": None,
+    "index_mtime": None,      # mtime подхваченного индекса (для авто-reload)
+    "meta_mtime": None,       # mtime подхваченного meta (для авто-reload)
     "ready": False,           # mongoose п.3: сигнал готовности
     "cache": {},              # normalized_key -> result dict
     "cache_hits": 0,
@@ -102,13 +104,23 @@ def load_index() -> bool:
             return False
         idx = faiss.read_index(INDEX_PATH)
         ki = _build_keyword_index(meta)
+        idx_mtime = os.path.getmtime(INDEX_PATH)
+        meta_mtime = (
+            os.path.getmtime(META_PATH) if os.path.exists(META_PATH)
+            else os.path.getmtime(META_PATH_PKL) if os.path.exists(META_PATH_PKL)
+            else None
+        )
         with _state_lock:
             _state["index"] = idx
             _state["meta"] = meta
             _state["keyword_index"] = ki
             _state["loaded_at"] = time.time()
+            _state["index_mtime"] = idx_mtime
+            _state["meta_mtime"] = meta_mtime
             _state["ready"] = True
             _state["last_error"] = None
+            # Индекс сменился на диске → старые результаты в кэше протухли
+            _state["cache"] = {}
         return True
     except Exception as e:
         with _state_lock:
@@ -310,17 +322,26 @@ def stats() -> Dict[str, Any]:
         idx = _state["index"]
         meta = _state["meta"]
         loaded = _state["loaded_at"]
+        idx_mtime = _state["index_mtime"]
         ready = _state["ready"]
         err = _state["last_error"]
     total_cache = hits + misses
     avg = (sum(lats) / len(lats)) if lats else 0.0
-    p95 = lats[int(len(lats) * 0.95)] if lats else 0.0
+    # p95 требует отсортированной выборки (перцентиль по порядковой статистике).
+    if lats:
+        slats = sorted(lats)
+        p95_idx = min(int(len(slats) * 0.95), len(slats) - 1)
+        p95 = slats[p95_idx]
+    else:
+        p95 = 0.0
     return {
         "ready": ready,
         "index_loaded": idx is not None,
         "index_ntotal": idx.ntotal if idx else 0,
         "meta_loaded": meta is not None,
         "loaded_at": loaded,
+        "index_mtime": idx_mtime,
+        "index_stale": _disk_index_changed(),
         "requests": req,
         "cache_hits": hits,
         "cache_misses": misses,
@@ -342,12 +363,37 @@ def reload_index() -> Dict[str, Any]:
 
 
 # ── Watchdog: wait for live index from Штрейкбрехер ───────────────────
+def _disk_index_changed() -> bool:
+    """True если индекс/meta на диске новее подхваченного в памяти."""
+    try:
+        with _state_lock:
+            cur_idx_mtime = _state["index_mtime"]
+            cur_meta_mtime = _state["meta_mtime"]
+        if not os.path.exists(INDEX_PATH):
+            return False
+        disk_idx = os.path.getmtime(INDEX_PATH)
+        disk_meta = (
+            os.path.getmtime(META_PATH) if os.path.exists(META_PATH)
+            else os.path.getmtime(META_PATH_PKL) if os.path.exists(META_PATH_PKL)
+            else None
+        )
+        if cur_idx_mtime is None or disk_idx > cur_idx_mtime:
+            return True
+        if disk_meta is not None and (cur_meta_mtime is None or disk_meta > cur_meta_mtime):
+            return True
+        return False
+    except Exception:
+        return False
+
+
 def _watchdog():
     while True:
         time.sleep(60)
         with _state_lock:
             have = _state["index"] is not None
-        if not have:
+        # Подхватываем индекс при первом старте ИЛИ когда Штрейкбрехер
+        # переиндексировал (файл на диске новее загруженного).
+        if not have or _disk_index_changed():
             load_index()
 
 
