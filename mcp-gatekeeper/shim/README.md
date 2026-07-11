@@ -14,14 +14,17 @@
   (приоритет в PATH перед `/usr/bin/systemctl` для агентов через gateway).
 - `crontab-wrapper` → устанавливается как `/usr/local/bin/crontab`.
 - `gk-register` → лёгкий MCP-клиент (handshake + `register_port`/`register_timer`).
-  Возвращает `ALLOW` / `REJECT` / `ERROR`.
+  Возвращает `ALLOW` / `REJECT` / `DEAD` (при недоступности Gatekeeper — контракт
+  ADR-0054: `GATEKEEPER_DEAD {status:dead, heal, mandatory_retry}` + exit 2).
 
 Логика wrapper:
 1. Парсит аргументы (`enable`/`start`/`restart` + имя юнита).
 2. Извлекает порт из юнита (`:PORT` в `ExecStart`/`Environment`).
 3. Вызывает gatekeeper через `gk-register` (timeout 5s).
 4. `REJECT` → блокирует оригинал, возвращает ошибку агенту.
-5. `ALLOW` / `ERROR` (timeout/недоступность) → fail-open, вызывает оригинал.
+5. `ALLOW` / `ERROR` (прочие ошибки) → fail-open, вызывает оригинал.
+   `DEAD` (Gatekeeper недоступен) → печатает контракт `GATEKEEPER_DEAD {...}` агенту,
+   exit 2, оригинал НЕ вызывается (по ADR-0054: агент обязан вылечить и повторить).
 6. Self-loop защита: не перехватывает `gatekeeper-shim.*` / `mcp-gatekeeper.*`.
 
 ## Слой 2 — реактивный backstop (systemd path-unit)
@@ -61,8 +64,9 @@ systemctl enable --now gatekeeper-shim.path
 
 ## Ограничения
 
-- Gatekeeper должен быть жив на `127.0.0.1:8888`. При недоступности — fail-open
-  (порядок не блокируется, но и не аудируется до восстановления).
+- Gatekeeper должен быть жив на `127.0.0.1:8888`. При недоступности `gk-register`
+  возвращает контракт `DEAD` (ADR-0054): агент получает инструкцию `heal` и обязан
+  повторить. Fail-open больше НЕ применяется при смерти сервера — агент сам лечит.
 - Gatekeeper видит только порты, прошедшие через него. Внешние сервисы
   (например, snablab на 8200, не зарегистрированный через gatekeeper) НЕ видны —
   нужно добавить их в `PORT_REGISTRY` / политику как reserved или агента.
@@ -74,3 +78,5 @@ systemctl enable --now gatekeeper-shim.path
 
 ADR-0053 (DoctorM_and_Ai/docs/adr/) — архитектура shim, fact-check паттернов,
 обоснование "польза, не тюрьма".
+ADR-0054 (DoctorM_and_Ai/docs/adr/) — протокол «dead + heal + mandatory_retry»:
+при недоступности Gatekeeper клиент возвращает контракт, агент лечит и повторяет.
