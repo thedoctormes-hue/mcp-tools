@@ -73,7 +73,7 @@ Least-privilege → Project-scoped lease → Root backdoor`
 python3 bin/mcp-gatekeeper-server.py
 
 # HTTP (systemd) — см. systemd/mcp-gatekeeper.service
-MCP_TRANSPORT=http MCP_PORT=8200 python3 bin/mcp-gatekeeper-server.py
+MCP_TRANSPORT=http MCP_PORT=8888 python3 bin/mcp-gatekeeper-server.py
 ```
 
 ### CLI-режим (для скриптов/CI)

@@ -12,7 +12,7 @@ ExecStart=/usr/bin/python3 /root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/bi
 WorkingDirectory=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper
 Environment=MCP_TRANSPORT=http
 Environment=MCP_HOST=127.0.0.1
-Environment=MCP_PORT=8200
+Environment=MCP_PORT=8888
 Environment=GATEKEEPER_POLICY=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/policies/policy_v1.yaml
 Environment=GATEKEEPER_DATA=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/data
 
