@@ -56,7 +56,7 @@ mcp = FastMCP(
 def _mask_key(key: str, show_head: int = 4, show_tail: int = 4) -> str:
     """Mask API key showing only first and last N characters."""
     if not key:
-        return None
+        return ""
     if len(key) <= show_head + show_tail:
         return key[:show_head] + "..." + key[-show_tail:] if len(key) > show_head else key
     return key[:show_head] + "*" * (len(key) - show_head - show_tail) + key[-show_tail:]
