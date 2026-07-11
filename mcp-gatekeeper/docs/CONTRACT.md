@@ -36,8 +36,8 @@
 ## Отказоустойчивость (systemd-юнит)
 - `Restart=on-failure` (НЕ always) + `RestartSec=5`
 - `StartLimitBurst=3` + `StartLimitIntervalSec=60` (против crash loop)
-- `WatchdogSec=30` + `Type=notify` (heartbeat из кода, ловит hang)
 - Config validation при старте (fail-fast)
+- **БЕЗ watchdog / heartbeat (polling избыточен):** «жив ли сервер» доказывается ответом на реальный запрос агента (событийно). Клиент ставит таймаут 5с на вызов `register_*`; при таймауте → событие `GATEKEEPER_TIMEOUT` в журнале + эскалация (без auto-restart без ведома).
 - Graceful degradation (если семантика упала — не падаем)
 - Log rate-limit (защита диска)
 
@@ -48,7 +48,7 @@
 
 ## Критерий product-ready
 - Сервер реализован, стартует под systemd, проходит PDP-проверки.
-- Тесты (unit PDP + integration systemd restart/watchdog) зелёные.
+- Тесты (unit PDP + integration systemd restart, событийный детект без watchdog) зелёные.
 - Журнал пишется, lease/handoff работают.
 - Backdoor root аудируется.
 - Контракт соблюдён без отклонений.

@@ -16,7 +16,7 @@ mcp-gatekeeper/
 ├── policies/
 │   └── policy_v1.yaml              # policy-as-code (источник истины для PDP)
 ├── systemd/
-│   └── mcp-gatekeeper.service      # юнит (Type=notify, WatchdogSec=30)
+│   └── mcp-gatekeeper.service      # юнит (Type=simple, без watchdog)
 ├── docs/
 │   └── CONTRACT.md                 # контракт (зона Ворона)
 ├── data/                           # port-timer-log.jsonl + leases.json (gitignored)
@@ -102,7 +102,10 @@ sudo systemctl enable --now mcp-gatekeeper
 sudo systemctl status mcp-gatekeeper
 ```
 
-- `Type=notify` + `WatchdogSec=30`: heartbeat из кода (`sd_notify`).
+- `Type=simple`: **без watchdog** — «жив ли сервер» доказывается ответом на
+  реальный запрос агента (событийно). Клиент (`register-port-timer.sh`) ставит
+  таймаут 5с на `register_*`; при таймауте → `GATEKEEPER_TIMEOUT` в журнале +
+  эскалация без auto-restart.
 - `Restart=on-failure` + `StartLimitBurst=3`: защита от crash-loop.
 - Config validation **fail-fast**: невалидная политика → быстрый выход.
 - Log rate-limit защищает диск.
@@ -114,5 +117,6 @@ pytest mcp-gatekeeper/tests -q
 ```
 
 Покрыто: вся PDP-цепочка (unit), атомарность `register_service`, handoff,
-reaper/lease-timeout, root backdoor, аудит-журнал, fail-fast, sd_notify
-(READY/WATCHDOG), реальный MCP stdio-транспорт, ключи юнит-файла.
+reaper/lease-timeout, root backdoor, аудит-журнал, fail-fast, одноразовые
+уведомления systemd (READY/STOPPING), реальный MCP stdio-транспорт, ключи
+юнит-файла (событийная модель: без WatchdogSec).

@@ -101,7 +101,10 @@ def log(msg: str, level: int = logging.INFO) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# sd_notify (Type=notify heartbeat) — без внешних зависимостей
+# sd_notify — one-shot lifecycle-уведомления systemd (без внешних зависимостей).
+# Используется ТОЛЬКО для READY=1 (старт) и STOPPING=1 (shutdown). НЕ для
+# периодического heartbeat/WATCHDOG — «живость» сервера доказуется ответом на
+# реальный запрос агента (событийная модель, см. docs/CONTRACT.md).
 # --------------------------------------------------------------------------- #
 def sd_notify(state: str) -> bool:
     """Отправить состояние systemd notify. Возвращает True, если отправлено."""
@@ -121,9 +124,8 @@ def sd_notify(state: str) -> bool:
         return False
 
 
-# Глобальные флаги для watchdog / shutdown
+# Глобальный флаг для graceful shutdown (НЕ watchdog — сервер не шлёт heartbeat)
 _STOP = threading.Event()
-_WORKER_ALIVE = threading.Event()
 
 
 # --------------------------------------------------------------------------- #
@@ -163,7 +165,6 @@ class Gatekeeper:
         gk = policy.get("gatekeeper", {})
         self.lease_timeout = float(gk.get("lease_timeout_sec", 300))
         self.heartbeat_interval = float(gk.get("heartbeat_interval_sec", 60))
-        self.watchdog_sec = float(gk.get("watchdog_sec", 30))
         self.lease_user = str(gk.get("lease_user", "mcp-gatekeeper"))
         self.allow_root_backdoor = bool(gk.get("allow_root_backdoor", True))
         self.justification_mode = str(gk.get("justification_mode", "v1_exact"))
@@ -775,17 +776,9 @@ def check_health() -> Dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
-# Фоновые потоки: watchdog (sd_notify) + reaper (lease timeout)
+# Фоновые потоки: reaper (lease timeout) — сервер НЕ шлёт heartbeat/watchdog.
+# «Жив ли сервер» доказывается ответом на реальный запрос агента (событийно).
 # --------------------------------------------------------------------------- #
-def _watchdog_loop() -> None:
-    interval = max(1.0, GK.watchdog_sec / 3.0)
-    while not _STOP.is_set():
-        # ливенесс: пинг только пока воркер (MCP) жив
-        if _WORKER_ALIVE.is_set():
-            sd_notify("WATCHDOG=1")
-        _STOP.wait(interval)
-
-
 def _reaper_loop() -> None:
     while not _STOP.is_set():
         try:
@@ -887,13 +880,11 @@ def main() -> None:
         sys.exit(1)
 
     _install_signal_handlers()
-    _WORKER_ALIVE.set()
-    threading.Thread(target=_watchdog_loop, name="watchdog", daemon=True).start()
     threading.Thread(target=_reaper_loop, name="reaper", daemon=True).start()
 
     transport = os.environ.get("MCP_TRANSPORT", "http").lower()
     log(f"mcp-gatekeeper {GATEKEEPER_VERSION} starting ({transport}), policy={DEFAULT_POLICY}", logging.INFO)
-    sd_notify("READY=1")  # Type=notify: готов к обслуживанию
+    sd_notify("READY=1")  # one-shot: уведомляем systemd о готовности (Type=simple игнорирует)
     if transport == "http":
         mcp.run(transport="streamable-http")
     else:

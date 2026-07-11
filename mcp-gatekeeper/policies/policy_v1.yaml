@@ -22,9 +22,6 @@ gatekeeper:
   # Ожидаемый интервал heartbeat (для диагностики/логов).
   heartbeat_interval_sec: 60
 
-  # Watchdog systemd: сервер шлёт sd_notify WATCHDOG каждые watchdog_sec/3.
-  watchdog_sec: 30
-
   # Least-privilege: ресурсы выдаются «от имени» этого ограниченного юзера.
   # Это НЕ root. Если здесь указан root — сервер напишет предупреждение в лог.
   lease_user: "mcp-gatekeeper"

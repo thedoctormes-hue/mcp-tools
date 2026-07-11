@@ -102,8 +102,71 @@ if [ "$MODE" = "mcp" ]; then
     mcpargs+=("$key=$val")
     i=$((i+2))
   done
-  exec mcporter call --stdio "python3 $SERVER" "$tool" "${mcpargs[@]}"
+fi
+
+# Куда писать журнал событий (data/port-timer-log.jsonl)
+REPO_DIR="$(cd "$HERE/.." && pwd)"
+DATA_DIR="${GATEKEEPER_DATA:-$REPO_DIR/data}"
+
+# Событийный детект зависания: таймаут 5с на вызов register_*. Сервер НЕ шлёт
+# periodic heartbeat — «жив ли он» доказывается ответом на реальный запрос.
+# При таймауте — событие GATEKEEPER_TIMEOUT в журнале + эскалация (БЕЗ auto-restart).
+is_register=0
+case "$KIND" in
+  port|timer|service) is_register=1 ;;
+esac
+
+if [ "$is_register" -eq 1 ]; then
+  set +e
+  if [ "$MODE" = "mcp" ]; then
+    timeout 5 mcporter call --stdio "python3 $SERVER" "$tool" "${mcpargs[@]}"
+    rc=$?
+  else
+    timeout 5 python3 "$SERVER" "${cli_args[@]}"
+    rc=$?
+  fi
+  set -e
+  if [ "$rc" -eq 124 ]; then
+    rid="GK-TIMEOUT-$(date +%s)-$$"
+    when="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    mkdir -p "$DATA_DIR"
+    # Атомарная дозапись JSONL-события (поля: request_id/when/agent/project/why)
+    python3 - "$DATA_DIR" "$rid" "$when" "$WHAT_FOR" "$AGENT" "$PROJECT" "$KIND" <<'PYEOF'
+import json, sys, os
+data_dir, rid, when, what_for, agent, project, kind = sys.argv[1:8]
+ev = {
+    "request_id": rid,
+    "when": when,
+    "what_for": what_for,
+    "why": "GATEKEEPER_TIMEOUT",
+    "agent": agent,
+    "project": project,
+    "action": "register_" + kind,
+}
+with open(os.path.join(data_dir, "port-timer-log.jsonl"), "a", encoding="utf-8") as f:
+    f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+PYEOF
+    cat >&2 <<EOF
+
+[ESCALATION] mcp-gatekeeper НЕ ответил в течение 5с на вызов '$KIND'
+  (agent=$AGENT, project=$PROJECT, what_for='$WHAT_FOR').
+
+Событие GATEKEEPER_TIMEOUT записано в: $DATA_DIR/port-timer-log.jsonl
+Сервер НЕ перезапущен автоматически — это изменение состояния, требует ведома.
+
+Что сделать оператору (по согласованию):
+  - проверить статус:   systemctl status mcp-gatekeeper
+  - посмотреть логи:    journalctl -u mcp-gatekeeper -n 100 --no-pager
+  - при необходимости:  systemctl restart mcp-gatekeeper   # только с ведома
+EOF
+    exit 1
+  fi
+  exit "$rc"
 else
-  # CLI напрямую
-  exec python3 "$SERVER" "${cli_args[@]}"
+  if [ "$MODE" = "mcp" ]; then
+    exec mcporter call --stdio "python3 $SERVER" "$tool" "${mcpargs[@]}"
+  else
+    # CLI напрямую
+    exec python3 "$SERVER" "${cli_args[@]}"
+  fi
 fi

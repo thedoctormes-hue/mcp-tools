@@ -7,7 +7,7 @@ StartLimitBurst=3
 StartLimitIntervalSec=60
 
 [Service]
-Type=notify
+Type=simple
 ExecStart=/usr/bin/python3 /root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/bin/mcp-gatekeeper-server.py
 WorkingDirectory=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper
 Environment=MCP_TRANSPORT=http
@@ -16,10 +16,12 @@ Environment=MCP_PORT=8200
 Environment=GATEKEEPER_POLICY=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/policies/policy_v1.yaml
 Environment=GATEKEEPER_DATA=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/data
 
-# Надёжный lifecycle (EBSW-совместимо)
+# Надёжный lifecycle (EBSW-совместимо). Зависание/смерть процесса
+# ловится событийно через Restart (без polling watchdog): агент ставит
+# таймаут 5с на вызов register_* и при таймауте пишет GATEKEEPER_TIMEOUT.
 Restart=on-failure
 RestartSec=5
-WatchdogSec=30
+# Периодический опрос (watchdog) удалён: polling-модель избыточна (см. docs/CONTRACT.md)
 # Config validation fail-fast: если политика невалидна — быстрый выход,
 # systemd сделает on-failure рестарт, упрётся в StartLimitBurst и остановится.
 TimeoutStartSec=30

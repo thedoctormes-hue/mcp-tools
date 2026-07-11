@@ -1,11 +1,13 @@
 """Integration-тесты: отказоустойчивость systemd-юнита и реальный MCP-транспорт.
 
 Покрываем критерий product-ready:
-- юнит содержит обязательные ключи (Restart=on-failure, WatchdogSec=30,
-  Type=notify, StartLimitBurst=3, StartLimitIntervalSec=60, RestartSec=5);
+- юнит содержит обязательные ключи (Type=simple, Restart=on-failure,
+  RestartSec=5, StartLimitBurst=3, StartLimitIntervalSec=60); НЕТ WatchdogSec
+  (polling избыточен — «жив ли сервер» доказывается ответом на запрос);
 - fail-fast: невалидная политика -> процесс завершается ненулевым кодом
   (systemd Restart=on-failure перезапустит, упрётся в StartLimitBurst);
-- sd_notify: READY=1 при старте и WATCHDOG=1 из watchdog-потока;
+- сервер НЕ шлёт периодический WATCHDOG (событийная модель); sd_notify
+  остаётся только для one-shot READY=1/STOPPING=1;
 - реальный MCP stdio-транспорт: сервер стартует и отвечает на register_port.
 """
 
@@ -17,7 +19,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from pathlib import Path
 
@@ -42,15 +43,16 @@ def test_unit_file_has_required_keys():
     assert UNIT.exists(), "нет юнит-файла"
     text = UNIT.read_text(encoding="utf-8")
     required = [
-        "Type=notify",
+        "Type=simple",
         "Restart=on-failure",
         "RestartSec=5",
         "StartLimitBurst=3",
         "StartLimitIntervalSec=60",
-        "WatchdogSec=30",
     ]
     for key in required:
         assert key in text, f"в юните нет обязательного: {key}"
+    # Событийная модель: polling-watchdog запрещён
+    assert "WatchdogSec" not in text, "юнит не должен содержать WatchdogSec (polling избыточен)"
 
 
 def test_unit_file_systemd_analyze():
@@ -76,10 +78,17 @@ def test_fail_fast_on_bad_policy():
 
 
 # --------------------------------------------------------------------------- #
-# sd_notify: READY + WATCHDOG
+# Событийная модель: сервер НЕ шлёт периодический WATCHDOG (нет пинга).
+# sd_notify остаётся только для one-shot READY/STOPPING (не heartbeat).
 # --------------------------------------------------------------------------- #
-def test_sd_notify_ready_and_watchdog():
+def test_event_driven_no_watchdog_one_shot_sd_notify():
     mod = _load_module()
+    # watchdog-поток и флаг воркера удалены в пользу событийного детекта
+    assert not hasattr(mod, "_watchdog_loop"), "watchdog-поток не должен существовать"
+    assert not hasattr(mod, "_WORKER_ALIVE"), "флаг воркера не должен существовать"
+    # sd_notify сохранён для one-shot уведомлений (не периодический WATCHDOG)
+    assert hasattr(mod, "sd_notify"), "sd_notify должен остаться для READY/STOPPING"
+
     sock_path = Path(tempfile.gettempdir()) / f"gk_notify_{os.getpid()}.sock"
     if sock_path.exists():
         sock_path.unlink()
@@ -88,29 +97,18 @@ def test_sd_notify_ready_and_watchdog():
 
     os.environ["NOTIFY_SOCKET"] = str(sock_path)
     try:
-        # READY при старте
+        # READY при старте (one-shot, не heartbeat)
         assert mod.sd_notify("READY=1") is True
         data, _ = recv_sock.recvfrom(1024)
         assert b"READY=1" in data, data
 
-        # WATCHDOG из watchdog-потока
-        mod.GK.watchdog_sec = 0.2
-        mod._WORKER_ALIVE.set()
-        t = threading.Thread(target=mod._watchdog_loop, name="wd", daemon=True)
-        t.start()
-        got_watchdog = False
-        recv_sock.settimeout(3)
-        deadline = time.time() + 3
-        while time.time() < deadline:
-            try:
-                data, _ = recv_sock.recvfrom(1024)
-                if b"WATCHDOG=1" in data:
-                    got_watchdog = True
-                    break
-            except socket.timeout:
-                break
-        mod._STOP.set()
-        assert got_watchdog, "watchdog не прислал WATCHDOG=1"
+        # НЕ должно быть периодического WATCHDOG=1 — его больше никто не шлёт
+        recv_sock.settimeout(1)
+        try:
+            data, _ = recv_sock.recvfrom(1024)
+            assert b"WATCHDOG=1" not in data, f"неожиданный WATCHDOG: {data}"
+        except socket.timeout:
+            pass  # ok: никто не шлёт watchdog
     finally:
         os.environ.pop("NOTIFY_SOCKET", None)
         recv_sock.close()
