@@ -1,0 +1,4 @@
+# data/ исключён из git (содержит аудит-журнал и runtime-состояние lease)
+data/
+__pycache__/
+*.pyc

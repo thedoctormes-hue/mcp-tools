@@ -1,0 +1,40 @@
+[Unit]
+Description=MCP Gatekeeper (привратник портов/таймеров агентов)
+Documentation=file:///root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/docs/CONTRACT.md
+After=network.target
+# StartLimit* ограничивают crash-loop (это [Unit]-секция, не [Service])
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/python3 /root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/bin/mcp-gatekeeper-server.py
+WorkingDirectory=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper
+Environment=MCP_TRANSPORT=http
+Environment=MCP_HOST=127.0.0.1
+Environment=MCP_PORT=8200
+Environment=GATEKEEPER_POLICY=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/policies/policy_v1.yaml
+Environment=GATEKEEPER_DATA=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/data
+
+# Надёжный lifecycle (EBSW-совместимо)
+Restart=on-failure
+RestartSec=5
+WatchdogSec=30
+# Config validation fail-fast: если политика невалидна — быстрый выход,
+# systemd сделает on-failure рестарт, упрётся в StartLimitBurst и остановится.
+TimeoutStartSec=30
+TimeoutStopSec=15
+MemoryMax=128M
+
+# Least-privilege: ресурсы выдаются «от ограниченного юзера». Раскомментируйте
+# и создайте юзера, чтобы сервер не шёл от root:
+#   useradd --system --no-create-home --shell /usr/sbin/nologin mcp-gatekeeper
+# User=mcp-gatekeeper
+# Тогда data/ должен быть доступен этому юзеру (chown mcp-gatekeeper).
+
+# Log rate-limit реализован в коде (защита диска).
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

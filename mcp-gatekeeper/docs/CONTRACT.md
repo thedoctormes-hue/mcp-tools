@@ -1,0 +1,54 @@
+# Контракт: MCP-привратник (mcp-gatekeeper)
+
+**Цель:** устранить хаос портов/таймеров в лаборатории. Агент не может напрямую занять порт или поставить таймер — только через этот MCP-сервер.
+
+**Репозиторий:** `/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/`
+**Структура:** `bin/` (сервер + скрипт-зародыш), `policies/` (policy-as-code), `systemd/` (юнит), `docs/` (контракт), `data/` (port-timer-log.jsonl, gitignored).
+
+## Ядро
+Единый MCP-сервер = привратник. Только он дёргает `systemctl`/бинд. Два пути:
+- Явный вызов MCP-инструмента (`register_service`).
+- Прозрачный shim (перехват `systemctl`/bind) — опц. позже.
+
+## Эндпоинты
+- `register_port` — только порт.
+- `register_timer` — только таймер.
+- `register_service` — порт + таймер атомарно (один `request_id`).
+- `release_resource` — освобождение по `request_id`.
+
+## PDP-мозг (детерминированный, policy-as-code — БЕЗ LLM в ядре)
+Цепочка проверок при запросе:
+1. **Identity** — агент известен? (нет → reject)
+2. **Диапазон портов** — порт в пуле агента (Ворон 8080–8099, Муравей 8100–8119, Сова 8120–8139, …)
+3. **Квота** — не превышен лимит (≤3 порта, ≤5 таймеров на агента)
+4. **Резерв** — порт не системный (<1024, 5432, 8086/8087, 9100/9187)
+5. **Дедуп** — таймер уникален по (действие+расписание); порт не занят
+6. **Justification** — `what_for` заполнен (семантика дублей — v2, fail-open)
+7. **Least-privilege** — выдача от имени ограниченного юзера, не root
+8. **Project-scoped lease** — ресурс за `project_id` + агент-арендатор + heartbeat; handoff между агентами; lease-таймаут → освобождение
+9. **Root backdoor** — root обходит проверку, но пишет в журнал с `BYPASS=root`
+
+Любой «нет» → reject с причиной (напр. «8090 занят проектом X, бери 8091»).
+
+## Журнал
+Каждое действие атомарно пишет JSONL (`port-timer-log.jsonl`): `request_id` + `when` + `what_for` + `why` + `agent` + `project`.
+
+## Отказоустойчивость (systemd-юнит)
+- `Restart=on-failure` (НЕ always) + `RestartSec=5`
+- `StartLimitBurst=3` + `StartLimitIntervalSec=60` (против crash loop)
+- `WatchdogSec=30` + `Type=notify` (heartbeat из кода, ловит hang)
+- Config validation при старте (fail-fast)
+- Graceful degradation (если семантика упала — не падаем)
+- Log rate-limit (защита диска)
+
+## Границы
+- Дизайн/контракт — зона Ворона (зафиксировано здесь).
+- Реализация сервера + systemd + шим — зона исполнителя (спавн-агент).
+- LLM/семантика — только v2, опционально, fail-open, переиспользует лаб. семпамять (ONNX+FAISS).
+
+## Критерий product-ready
+- Сервер реализован, стартует под systemd, проходит PDP-проверки.
+- Тесты (unit PDP + integration systemd restart/watchdog) зелёные.
+- Журнал пишется, lease/handoff работают.
+- Backdoor root аудируется.
+- Контракт соблюдён без отклонений.
