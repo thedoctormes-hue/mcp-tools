@@ -78,3 +78,6 @@ tmp/
 *.key
 *.pem
 *.p12
+
+# coverage artifacts
+.coverage

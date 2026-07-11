@@ -100,12 +100,13 @@ CI: `.github/workflows/tests.yml` запускает `pytest` на каждый 
 Stateful MCP-фасад над FAISS/ONNX для семантической памяти лабы.
 
 **Транспорт:** Streamable HTTP на `127.0.0.1:8087` (systemd `mcp-memory.service`).
-**Статус:** Product Ready (eager preload, in-memory keyword-fallback, p95 monitoring, normalized cache).
+**Статус:** Product Ready (eager preload, lazy check-on-request revalidation, in-memory keyword-fallback, p95 monitoring, normalized cache).
 
 **Тулы:**
 - `lab_memory_search(query, top_k=5, threshold=0.3, agent="", project="", source="", date="", metadata_only=False)` — семантический поиск с фильтрами по workspace/проекту/источнику/дате. `metadata_only=True` отдаёт только карточку (без текста) для экономии токенов.
 - `lab_memory_get_chunk(id, max_chars=4000)` — докачать полный текст чанка по id.
 - `lab_memory_stats()` — ready-флаг, размер индекса, cache hit-ratio, avg/p95 latency.
 - `lab_memory_reload()` — горячая перезагрузка индекса (после реиндекса Штрейкбрехером).
+- **Авто-подхват свежего индекса:** сервер не опрашивает диск в фоне и не ждёт сигнала от индексатора. Перед каждым `lab_memory_search` он сверяет mtime индекса/meta на диске с загруженным в память (один `os.stat`) и перезагружает индекс ровно когда тот стал новее — под блокировкой с double-check (защита от гонки при одновременных запросах). Так сервер сам держит свежесть по факту запроса, без зависимости от индексатора и без фоновых потоков.
 
 **Verifying:** `python3 scripts/mcp-verify.py --url http://127.0.0.1:8087/mcp --list-tools`
