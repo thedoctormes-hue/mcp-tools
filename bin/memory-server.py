@@ -62,6 +62,9 @@ _state = {
     "last_error": None,
 }
 _state_lock = threading.Lock()
+# Отдельный лок сериализует ТОЛЬКО перезагрузку индекса (тяжёлую), чтобы при
+# гонке двух запросов индекс грузил ровно один поток, а не оба разом.
+_reload_lock = threading.Lock()
 
 
 # ── Audit ────────────────────────────────────────────────────────────────
@@ -263,6 +266,10 @@ def search(query: str, top_k: int = 5, threshold: float = DEFAULT_THRESHOLD,
     with _state_lock:
         _state["requests"] += 1
     cache_key = f"{query.lower().strip()}|{top_k}|{round(threshold, 2)}|{agent}|{project}|{source}|{date}|{metadata_only}"
+    # Проверяем свежесть ДО чтения кэша: если индекс на диске сменился,
+    # _ensure_fresh_index перезагрузит его и очистит кэш (load_index чистит
+    # cache), поэтому протухшие результаты не отдадим.
+    _ensure_fresh_index()
     with _state_lock:
         cached = _state["cache"].get(cache_key)
         if cached is not None:
@@ -386,22 +393,32 @@ def _disk_index_changed() -> bool:
         return False
 
 
-def _watchdog():
-    while True:
-        time.sleep(60)
-        with _state_lock:
-            have = _state["index"] is not None
-        # Подхватываем индекс при первом старте ИЛИ когда Штрейкбрехер
-        # переиндексировал (файл на диске новее загруженного).
-        if not have or _disk_index_changed():
-            load_index()
+def _ensure_fresh_index() -> bool:
+    """Check-on-request: если индекс на диске новее загруженного — перезагрузить.
+
+    Дешёвый путь: один os.stat через _disk_index_changed(). Если ничего не
+    менялось (обычный случай) — мгновенный возврат, никакой тяжёлой работы.
+
+    Защита от гонки: если несколько запросов одновременно увидели "устарело",
+    _reload_lock пропускает грузить ровно один поток; остальные ждут, затем
+    повторная проверка под локом показывает "уже свежо" — и они просто ищут.
+    Returns True если была выполнена перезагрузка.
+    """
+    if not _disk_index_changed():
+        return False
+    with _reload_lock:
+        # double-check под локом: пока ждали, другой поток мог уже перезагрузить
+        if not _disk_index_changed():
+            return False
+        return load_index()
 
 
 # ── Main ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Eager preload at startup (mongoose п.3)
+    # Eager preload at startup: подхватываем то, что уже лежит на диске.
+    # Дальше свежесть держится ленивой ревалидацией на каждом запросе
+    # (_ensure_fresh_index) — без фонового поллинга и без inotify.
     load_index()
-    threading.Thread(target=_watchdog, daemon=True).start()
     if TRANSPORT == "stdio":
         mcp.run(transport="stdio")
     else:
