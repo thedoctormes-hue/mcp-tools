@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# gatekeeper shim: PATH-wrapper для systemctl (Слой 1, принудительный).
+# Перехватывает enable/start/restart юнитов -> pre-action check в mcp-gatekeeper (8888).
+# REJECT -> блокируем (порядок). ALLOW/ERROR/таймаут -> вызываем оригинал (fail-open).
+set -u
+ORIG=/usr/bin/systemctl
+HELPER=/usr/local/bin/gk-register
+
+# self-loop: не перехватывать самих себя / gatekeeper / shim-юниты
+for a in "$@"; do
+  case "$a" in
+    gatekeeper-shim.*|mcp-gatekeeper.*) exec "$ORIG" "$@" ;;
+  esac
+done
+
+ACTION=""; UNIT=""
+for a in "$@"; do
+  case "$a" in
+    enable|start|restart|daemon-reload) ACTION="$a" ;;
+    +*) UNIT="${a#+}"; ACTION="add" ;;
+    *.service|*.timer|*.socket) UNIT="$a" ;;
+  esac
+done
+
+if [[ -n "$UNIT" && "$ACTION" != "daemon-reload" ]]; then
+  PORT=""
+  if [[ -f "/etc/systemd/system/$UNIT" ]]; then
+    PORT=$(grep -oE ':[0-9]{2,5}' "/etc/systemd/system/$UNIT" | head -1 | tr -d ':')
+  fi
+  if [[ -n "$PORT" ]]; then
+    DEC=$(timeout 5 "$HELPER" port "$PORT" "systemd $UNIT" "shim" "shim" 2>/dev/null)
+    if [[ "$DEC" == "REJECT" ]]; then
+      echo "gatekeeper shim: REJECT port $PORT for $UNIT — blocked (порядок нарушен?)" >&2
+      exit 1
+    fi
+    # ALLOW / ERROR / пусто -> продолжаем (fail-open)
+  fi
+fi
+
+exec "$ORIG" "$@"

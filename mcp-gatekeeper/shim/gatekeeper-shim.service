@@ -1,0 +1,6 @@
+[Unit]
+Description=Gatekeeper shim: register new units via gatekeeper (backstop)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gk-scan.sh

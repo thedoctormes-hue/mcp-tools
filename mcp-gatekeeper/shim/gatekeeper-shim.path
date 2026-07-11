@@ -1,0 +1,9 @@
+[Unit]
+Description=Gatekeeper shim: watch /etc/systemd/system for new units
+
+[Path]
+PathChanged=/etc/systemd/system/
+Unit=gatekeeper-shim.service
+
+[Install]
+WantedBy=multi-user.target
