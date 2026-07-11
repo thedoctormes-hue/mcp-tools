@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """gk-register — лёгкий MCP-клиент для mcp-gatekeeper (порт 8888).
 Делает handshake + вызывает register_port/register_timer.
-Возвращает decision: ALLOW / REJECT / ERROR (при недоступности -> ERROR, fail-open).
+Возвращает: ALLOW / REJECT / DEAD (при недоступности -> DEAD + контрактный ответ).
 Используется shim-wrapper'ами systemctl/crontab и path-unit service.
+
+Протокол ADR-0054: при недоступности Gatekeeper клиент возвращает контракт
+"dead + heal + mandatory_retry" (см. ADR-0054).
 """
 import json, sys, urllib.request
 
@@ -43,7 +46,8 @@ def register_port(agent, project, port, what_for):
         # gatekeeper отвечает полем 'status' (не 'decision')
         return json.loads(txt).get("status", "ERROR")
     except Exception:
-        return "ERROR"
+        # Gatekeeper мёртв/недоступен — по ADR-0054 возвращаем контракт, не fail-open
+        return "DEAD"
 
 if __name__ == "__main__":
     if len(sys.argv) < 3 or sys.argv[1] != "port":
@@ -52,4 +56,15 @@ if __name__ == "__main__":
     what_for = sys.argv[3] if len(sys.argv) > 3 else "shim"
     agent = sys.argv[4] if len(sys.argv) > 4 else "shim"
     project = sys.argv[5] if len(sys.argv) > 5 else "shim"
-    print(register_port(agent, project, port, what_for))
+    res = register_port(agent, project, port, what_for)
+    if res == "DEAD":
+        contract = {
+            "status": "dead",
+            "heal": "systemctl restart mcp-gatekeeper",
+            "mandatory_retry": True,
+            "message": "Gatekeeper мертв. Вылечи: systemctl restart mcp-gatekeeper, затем ОБЯЗАН повторить register_port."
+        }
+        print("GATEKEEPER_DEAD " + json.dumps(contract, ensure_ascii=False))
+        sys.exit(2)
+    print(res)
+    sys.exit(0 if res == "ALLOW" else 1)

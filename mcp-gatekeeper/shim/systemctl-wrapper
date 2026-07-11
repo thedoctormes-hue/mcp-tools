@@ -33,6 +33,11 @@ if [[ -n "$UNIT" && "$ACTION" != "daemon-reload" ]]; then
       echo "gatekeeper shim: REJECT port $PORT for $UNIT — blocked (порядок нарушен?)" >&2
       exit 1
     fi
+    if [[ "$DEC" == GATEKEEPER_DEAD* ]]; then
+      echo "$DEC" >&2
+      echo "gatekeeper shim: сервер мертв. Выполни инструкцию heal, затем повтори enable/start." >&2
+      exit 2
+    fi
     # ALLOW / ERROR / пусто -> продолжаем (fail-open)
   fi
 fi
