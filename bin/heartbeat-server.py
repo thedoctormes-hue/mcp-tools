@@ -27,9 +27,11 @@ Schema: see docs/heartbeat-status-schema.md
 """
 
 import json
+import logging
 import os
 import random
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -59,6 +61,55 @@ mcp = FastMCP(
     host=os.environ.get("MCP_HOST", "127.0.0.1"),
     port=int(os.environ.get("MCP_PORT", "8088")),
 )
+
+# --- Audit journal (append-only, rotating) ---
+# Records EVERY tool call: who (agent arg), what (tool), when (ts, UTC),
+# and the verdict served. Operational artifact -> .ops/ (per AGENTS.md).
+# This is observability (a log), NOT a write to any agent's state, so the
+# server stays read-only w.r.t. colony data.
+AUDIT_DIR = Path(
+    os.environ.get("HB_AUDIT_DIR", "/root/LabDoctorM/.ops/mcp-heartbeat")
+)
+AUDIT_FILE = AUDIT_DIR / "audit.log"
+_audit_logger = logging.getLogger("heartbeat.audit")
+
+
+def _init_audit() -> None:
+    _audit_logger.setLevel(logging.INFO)
+    _audit_logger.propagate = False
+    # File handler (rotating: 10MB x 5 = ~50MB cap).
+    try:
+        AUDIT_DIR.mkdir(parents=True, exist_ok=True)
+        fh = RotatingFileHandler(
+            AUDIT_FILE, maxBytes=10 * 1024 * 1024, backupCount=5,
+            encoding="utf-8",
+        )
+        fh.setFormatter(logging.Formatter("%(message)s"))
+        _audit_logger.addHandler(fh)
+    except Exception as e:  # noqa
+        # If file logging fails, still keep stream logging below.
+        logging.getLogger("heartbeat").warning(
+            "audit file handler unavailable: %s", e)
+    # Stream handler -> journald (systemd captures stdout).
+    sh = logging.StreamHandler()
+    sh.setFormatter(logging.Formatter("AUDIT %(message)s"))
+    _audit_logger.addHandler(sh)
+
+
+def _audit(tool: str, **fields: Any) -> None:
+    """Write one structured JSON line to the audit journal."""
+    rec = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "tool": tool,
+    }
+    rec.update(fields)
+    try:
+        _audit_logger.info(json.dumps(rec, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+_init_audit()
 
 
 # --- Helpers (all read-only) ---
@@ -245,7 +296,18 @@ def pull(agent: str) -> Dict[str, Any]:
     Security: read-only; agent must be in the allowlist; returns facts, not
     executable instructions.
     """
-    return _pull(agent)
+    result = _pull(agent)
+    _audit(
+        "pull",
+        agent=str(agent).lower(),
+        ok="error" not in result,
+        overall=result.get("overall"),
+        fail=result.get("fail"),
+        checklist_pending=result.get("checklist_pending"),
+        grimoire_available=result.get("grimoire_available"),
+        error=result.get("error"),
+    )
+    return result
 
 
 @mcp.tool()
@@ -278,6 +340,7 @@ def colony() -> Dict[str, Any]:
             "grimoire_available": p.get("grimoire_available"),
             "status_freshness": p.get("status_freshness"),
         }
+    _audit("colony", totals=totals, alerts=alerts)
     return {
         "agents": out,
         "totals": totals,
@@ -289,13 +352,23 @@ def colony() -> Dict[str, Any]:
 @mcp.tool()
 def list_agents() -> List[str]:
     """Return the colony agent allowlist."""
+    _audit("list_agents", count=len(AGENTS))
     return list(AGENTS)
 
 
 # --- Resources: one personal endpoint per agent (8 endpoints) ---
 def _make_resource(agent_id: str):
     def _res() -> str:
-        return json.dumps(_pull(agent_id), ensure_ascii=False, indent=2)
+        result = _pull(agent_id)
+        _audit(
+            "resource",
+            agent=agent_id,
+            uri=f"heartbeat://{agent_id}",
+            overall=result.get("overall"),
+            fail=result.get("fail"),
+            checklist_pending=result.get("checklist_pending"),
+        )
+        return json.dumps(result, ensure_ascii=False, indent=2)
     _res.__name__ = f"heartbeat_{agent_id}"
     return _res
 

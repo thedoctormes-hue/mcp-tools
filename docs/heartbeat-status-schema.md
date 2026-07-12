@@ -2,7 +2,7 @@
 description: "Схема hb-status.json — канонический файл чек-листа heartbeat"
 type: doc
 last_reviewed: 2026-07-12
-status: draft
+status: active
 ---
 
 # hb-status.json — канонический файл чек-листа heartbeat
@@ -59,3 +59,34 @@ Heartbeat-директива в `HEARTBEAT.md` схлопывается до:
 - `partial` — есть unknown, нет fail
 - `no_checks` — checks пуст
 - `no_data` — hb-status.json отсутствует (cron ещё не писал)
+
+## Аудит-журнал (audit.log)
+
+Сервер ведёт подробный append-only журнал каждого вызова.
+
+- **Путь:** `/root/LabDoctorM/.ops/mcp-heartbeat/audit.log` (env `HB_AUDIT_DIR`)
+- **Дубль:** каждая строка также идёт в journald с префиксом `AUDIT`
+  (`journalctl -u mcp-heartbeat.service | grep AUDIT`)
+- **Формат:** одна JSON-строка на вызов
+- **Ротация:** RotatingFileHandler, 10MB × 5 (~50MB cap)
+
+### Поля
+- `ts` — ISO-8601 UTC, момент вызова
+- `tool` — `pull` | `resource` | `colony` | `list_agents`
+- `agent` — какой агент запрошен (для pull/resource)
+- `uri` — `heartbeat://<agent>` (для resource)
+- `overall`, `fail`, `checklist_pending`, `grimoire_available` — выданный вердикт
+- `ok`, `error` — успех/ошибка запроса (для pull)
+- `totals`, `alerts` — сводка (для colony)
+- `count` — число агентов (для list_agents)
+
+### Примеры
+```json
+{"ts":"...","tool":"pull","agent":"raven","ok":true,"overall":"alert","fail":2,"checklist_pending":false,"grimoire_available":true,"error":null}
+{"ts":"...","tool":"colony","totals":{"ok":0,"alert":8,...},"alerts":["raven",...]}
+```
+
+### Зачем (proof heartbeat)
+Отвечает на «кто и когда дёрнул»: `grep '"agent": "raven"' audit.log` показывает,
+ходил ли Ворон на свой эндпоинт и когда. Это observability (лог), НЕ запись в
+состояние агентов — read-only-инвариант сервера сохранён.
