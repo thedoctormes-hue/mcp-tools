@@ -49,8 +49,8 @@ def test_journal_direct_event_atomic(gk):
 
 
 def test_journal_records_reject(gk):
-    # out-of-range -> REJECT must still be audited
-    gk.register_port("raven", "lab", 9999, "bad port")
+    # вне глобального диапазона (70000) -> REJECT должен аудироваться
+    gk.register_port("raven", "lab", 70000, "bad port")
     recs = _journal_lines(gk)
     assert any(r.get("decision") == "REJECT" or "REJECT" in str(r.get("why", "")) for r in recs)
 

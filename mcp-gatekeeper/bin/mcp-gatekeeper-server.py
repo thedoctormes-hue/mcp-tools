@@ -325,11 +325,17 @@ class Gatekeeper:
         return True, ""
 
     def check_dedup_port(self, port: int, agent: str = "") -> Tuple[bool, str]:
-        # Реальные коллизии (два сервиса на один порт) пресекает ЯДРО ОС: systemd
-        # не поднимет второй инстанс на занятом порту. Задача gatekeeper — реестр
-        # + аудит, а не OS-collision-cop. Поэтому повторная регистрация того же
-        # порта (например, restart сервиса) = refresh, а не отказ. Межсервисные
-        # конфликты ловит ядро, не политика (ЗавЛаб 12.07).
+        # Ловим ТОЛЬКО перекрёстные претензии: другой агент заявляет тот же порт,
+        # что уже занят — это реальный конфликт намерений (squatting). Повторная
+        # регистрация тем же агентом (restart сервиса) = refresh, не отказ
+        # (ЗавЛаб 12.07). Физические коллизии (два сервиса на один порт) пресекает
+        # ядро ОС, не политика.
+        for l in self.leases.values():
+            if l.port == port and l.agent != agent:
+                return False, (
+                    f"порт {port} уже заявлен агентом '{l.agent}' "
+                    f"(project={l.project_id}, request_id={l.request_id})"
+                )
         return True, ""
 
     def check_dedup_timer(self, action: str, schedule: str) -> Tuple[bool, str]:
@@ -364,11 +370,14 @@ class Gatekeeper:
         # сервиса/таймера) = refresh, НЕ аномалия (ЗавЛаб 12.07: инфра-рестарты
         # легитимны и идемпотентны). Блокируем только дубликат у ДРУГОГО агента.
         if self.justification_mode.startswith("v1"):
+            # Блокируем ТОЛЬКО перехват чужого оправдания (другой агент с тем же
+            # текстом) — аномалия squatting. Тот же агент может переиспользовать
+            # текст (restart / другой ресурс) — это легитимно (ЗавЛаб 12.07:
+            # любой агент может порты/таймеры, ядро ловит коллизии).
             for l in self.leases.values():
-                if l.what_for == wf:
-                    if l.agent == agent and (port is None or l.port == port):
-                        return True, ""   # тот же агент + тот же ресурс -> refresh
+                if l.what_for == wf and l.agent != agent:
                     return False, f"дубликат justification (exact match): '{wf}' уже есть у '{l.agent}'"
+            return True, ""
         # v2: семантический дедуп — fail-open (если эмбеддер недоступен, не блокируем)
         elif self.justification_mode.startswith("v2"):
             try:

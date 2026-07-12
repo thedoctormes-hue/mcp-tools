@@ -46,21 +46,22 @@ def test_r2_raven_high_bound_allowed(gk):
     assert gk.pdp(_req(agent="raven", port=8099))[0] is True
 
 def test_r2_raven_out_of_range_rejected(gk):
-    allow, reason = gk.pdp(_req(agent="raven", port=8100))
+    # Global range [1024,65535]; порт выше диапазона -> REJECT (range).
+    allow, reason = gk.pdp(_req(agent="raven", port=70000))
     assert allow is False
-    assert "пул" in reason.lower() or "range" in reason.lower() or "вне" in reason.lower()
+    assert "вне" in reason.lower() or "range" in reason.lower() or "диапазон" in reason.lower()
 
 def test_r2_antcat_in_range_allowed(gk):
     assert gk.pdp(_req(agent="antcat", port=8100))[0] is True
 
 def test_r2_antcat_out_of_range_rejected(gk):
-    assert gk.pdp(_req(agent="antcat", port=8120))[0] is False
+    assert gk.pdp(_req(agent="antcat", port=70000))[0] is False
 
 def test_r2_owl_in_range_allowed(gk):
     assert gk.pdp(_req(agent="owl", port=8120))[0] is True
 
 def test_r2_owl_out_of_range_rejected(gk):
-    assert gk.pdp(_req(agent="owl", port=8079))[0] is False
+    assert gk.pdp(_req(agent="owl", port=70000))[0] is False
 
 
 # --------------------------------------------------------------------------- #
@@ -103,7 +104,7 @@ def test_r4_reserved_in_range_rejected(gk, port):
     assert allow is False
     assert "резерв" in reason.lower() or "reserve" in reason.lower()
 
-@pytest.mark.parametrize("port", [22, 80, 443, 1023, 5432, 9100, 9187])
+@pytest.mark.parametrize("port", [22, 80, 443, 1023, 8888, 9090, 9187])
 def test_r4_other_reserved_blocked(gk, port):
     assert gk.pdp(_req(agent="raven", port=port))[0] is False
 
@@ -115,11 +116,21 @@ def test_r4_normal_port_allowed(gk):
 # Rule 5 — Dedup
 # --------------------------------------------------------------------------- #
 
-def test_r5_duplicate_port_rejected(gk):
+def test_r5_duplicate_port_refreshes_same_agent(gk):
+    # Повторная регистрация того же порта тем же агентом (restart) = refresh.
     gk.register_port("raven", "lab", 8080, "first claim")
     r = gk.register_port("raven", "lab", 8080, "second claim")
+    assert r["status"] == "ALLOW", r
+    live = [l for l in gk.leases.values() if l.agent == "raven" and l.port == 8080]
+    assert len(live) == 1, "повтор должен обновлять lease, а не плодить"
+
+
+def test_r5_cross_agent_port_rejected(gk):
+    # Другой агент на тот же порт = реальный конфликт намерений -> REJECT.
+    gk.register_port("raven", "lab", 8080, "service A")
+    r = gk.register_port("owl", "lab", 8080, "service B")
     assert r["status"] == "REJECT"
-    assert "занят" in r["error"].lower() or "dup" in r["error"].lower()
+    assert "занят" in r["error"].lower() or "заявлен" in r["error"].lower()
 
 def test_r5_duplicate_timer_rejected(gk):
     gk.register_timer("raven", "lab", "backup", "0 2 * * *", "nightly backup")
@@ -141,14 +152,20 @@ def test_r6_empty_what_for_rejected(gk):
 def test_r6_filled_what_for_allowed(gk):
     assert gk.pdp(_req(agent="raven", port=8080, what_for="metrics exporter"))[0] is True
 
-def test_r6_duplicate_justification_same_slot_rejected(gk):
-    # v1 exact-match justification dedup is scoped to (agent, what_for, same port).
-    # A timer carries no port, so re-using an identical what_for for a second
-    # timer with the same (action/schedule) is caught by dedup; here we assert
-    # the port-scoped justification path: same agent, same what_for, port=None.
+def test_r6_duplicate_justification_same_agent_refreshes(gk):
+    # Тот же агент + тот же what_for (даже для таймера, port=None) = refresh,
+    # не аномалия (ЗавЛаб 12.07: restart легитимен).
     gk.register_timer("raven", "lab", "job", "*/5 * * * *", "identical justification text")
     allow, reason = gk.pdp(dict(agent="raven", project_id="lab", port=None,
                                 what_for="identical justification text"))
+    assert allow is True
+
+
+def test_r6_cross_agent_justification_rejected(gk):
+    # Перехват чужого оправдания (другой агент с тем же текстом) = аномалия.
+    gk.register_port("raven", "lab", 8080, "prometheus exporter")
+    allow, reason = gk.pdp(dict(agent="owl", project_id="lab", port=8120,
+                                what_for="prometheus exporter"))
     assert allow is False
     assert "justification" in reason.lower() or "дубликат" in reason.lower()
 
@@ -190,10 +207,18 @@ def test_r8_project_id_required(gk):
     assert allow is False
     assert "project" in reason.lower()
 
-def test_r8_port_taken_across_projects(gk):
+def test_r8_same_agent_port_refreshes_across_projects(gk):
+    # Тот же агент, тот же порт, другой проект -> refresh (ЗавЛаб 12.07).
     gk.register_port("raven", "projA", 8080, "service A")
     r = gk.register_port("raven", "projB", 8080, "service B")
-    assert r["status"] == "REJECT"  # port globally taken
+    assert r["status"] == "ALLOW", r
+
+
+def test_r8_cross_agent_port_rejected(gk):
+    # Другой агент на тот же порт = конфликт -> REJECT.
+    gk.register_port("raven", "projA", 8080, "service A")
+    r = gk.register_port("owl", "projB", 8080, "service B")
+    assert r["status"] == "REJECT"
 
 def test_r8_handoff_transfers_tenant(gk):
     reg = gk.register_port("raven", "projA", 8080, "shared service")
@@ -253,13 +278,18 @@ def test_r9_root_register_sets_bypass_flag(gk):
 # --------------------------------------------------------------------------- #
 
 def test_reject_reason_human_readable(gk):
+    # Cross-agent конфликт порта -> REJECT с человекочитаемой причиной.
     gk.register_port("raven", "lab", 8085, "occupier")
-    r = gk.register_port("raven", "lab", 8085, "second occupier")
+    r = gk.register_port("owl", "lab", 8085, "second occupier")
     assert r["status"] == "REJECT"
     assert len(r["error"]) > 5
 
-def test_dup_port_suggests_alternative(gk):
-    gk.register_port("raven", "lab", 8085, "occupier")
-    r = gk.register_port("raven", "lab", 8085, "another use")
-    # CONTRACT wants a suggestion ("бери 8091"); server appends "предлагаю ..."
-    assert "предлаг" in r["error"].lower() or "8" in r["error"]
+def test_suggest_free_port_global_range(gk):
+    # _suggest_free_port предлагает порт в глобальном разрешённом диапазоне,
+    # не резерв и не занят.
+    sug = gk._suggest_free_port("raven")
+    assert sug is not None
+    lo, hi = gk.allowed_port_range
+    assert lo <= sug <= hi
+    assert sug >= int(gk.reserve.get("block_privileged_below", 1024))
+    assert sug not in gk.reserve.get("blocked_ports", [])
