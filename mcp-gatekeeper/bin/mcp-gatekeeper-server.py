@@ -359,11 +359,16 @@ class Gatekeeper:
         wf = str(what_for).strip()
         if len(wf) < 4:
             return False, "what_for слишком короткий (justification, min 4 символа)"
-        # v1: точный (exact) match дедупа оправданий для того же порта/агента
+        # v1: точный (exact) match дедупа оправданий.
+        # Повторная регистрация ТОГО ЖЕ ресурса тем же агентом (restart
+        # сервиса/таймера) = refresh, НЕ аномалия (ЗавЛаб 12.07: инфра-рестарты
+        # легитимны и идемпотентны). Блокируем только дубликат у ДРУГОГО агента.
         if self.justification_mode.startswith("v1"):
             for l in self.leases.values():
-                if l.agent == agent and l.what_for == wf and (port is None or l.port == port):
-                    return False, f"дубликат justification (exact match): '{wf}' уже есть у '{agent}'"
+                if l.what_for == wf:
+                    if l.agent == agent and (port is None or l.port == port):
+                        return True, ""   # тот же агент + тот же ресурс -> refresh
+                    return False, f"дубликат justification (exact match): '{wf}' уже есть у '{l.agent}'"
         # v2: семантический дедуп — fail-open (если эмбеддер недоступен, не блокируем)
         elif self.justification_mode.startswith("v2"):
             try:
