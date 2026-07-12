@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily MCP Heartbeat Collector trigger
+Documentation=https://github.com/LabDoctorM/mcp-tools
+
+[Timer]
+# Once per day, staggered off midnight (after cron-heavy infra settles).
+OnCalendar=*-*-* 01:07:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=mcp-heartbeat-collect.service
+
+[Install]
+WantedBy=timers.target
