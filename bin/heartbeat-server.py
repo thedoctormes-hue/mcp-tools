@@ -208,33 +208,37 @@ def _emoji(result: str) -> str:
     return {"pass": "✅", "fail": "🔴", "unknown": "⚪"}.get(result, "⚪")
 
 
+# Short labels for the critical health params (the "standard" task):
+# a health-check of the server + the whole laboratory.
+_LABELS = {
+    "grimoire.md жив": "grimoire",
+    "search-stack alive": "search-stack",
+    "gateway healthy": "gateway",
+    "disk safe (<85%)": "disk",
+    "reindex alive": "reindex",
+}
+
+
 def _render_summary(agent: str, grimoire_line: Optional[str],
                     summary: Dict[str, Any], fresh: Dict[str, Any]) -> str:
-    lines = [f"🐾 Heartbeat — {agent}"]
-    if grimoire_line:
-        lines.append(f"Собор сердца: {grimoire_line}")
-    else:
-        lines.append("Собор сердца: 🔴 grimoire.md пуст/не найден")
-    ov = summary["overall"]
-    head = {
-        "ok": "✅ Все проверки пройдены",
-        "alert": f"🔴 ТРЕВОГА: {summary['fail']} провал(ов)",
-        "partial": "⚪ Часть проверок без данных",
-        "no_checks": "⚪ Чек-лист пуст",
-        "no_data": "⚪ Нет данных cron (hb-status.json отсутствует)",
-    }.get(ov, ov)
-    lines.append(head)
+    # Minimalist, aesthetic health-check. Standard task = server + lab vitals.
+    now = datetime.now().strftime("%H:%M")
+    lines = [f"🐾 {agent} · {now}"]
     for c in summary.get("checks", []):
-        nm = c.get("name", "?")
+        nm = _LABELS.get(c.get("name", ""), c.get("name", "?"))
         res = c.get("result", "unknown")
         note = c.get("note", "")
-        tail = f" — {note}" if note else ""
-        lines.append(f"  {_emoji(res)} {nm}{tail}")
-    if fresh.get("age_hours") is not None:
-        fl = "свежо" if fresh.get("fresh") else "🔴 УСТАРЕЛО"
-        lines.append(f"Статус-файл: {fl} ({fresh['age_hours']}ч, {fresh.get('updated_at')})")
-    else:
-        lines.append("Статус-файл: нет updated_at (cron ещё не писал)")
+        tail = f" · {note}" if note else ""
+        lines.append(f"{_emoji(res)} {nm}{tail}")
+    ov = summary["overall"]
+    verdict = {
+        "ok": "всё ок",
+        "alert": f"ТРЕВОГА · {summary['fail']} провал(а)",
+        "partial": "частично без данных",
+        "no_checks": "чек-лист пуст",
+        "no_data": "нет данных (cron ещё не писал)",
+    }.get(ov, ov)
+    lines.append(f"— {verdict}")
     return "\n".join(lines)
 
 
