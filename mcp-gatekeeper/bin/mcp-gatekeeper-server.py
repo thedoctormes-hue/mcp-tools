@@ -28,7 +28,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -877,6 +877,27 @@ def _cli() -> int:
 # Точка входа
 # --------------------------------------------------------------------------- #
 def main() -> None:
+    # Ручной разбор --policy/--data: server-mode раньше игнорировал эти
+    # флаги (грузил default), из-за чего test_fail_fast_on_bad_policy не
+    # срабатывал. Если указаны — пересоздаём глобальный GK с fail_fast,
+    # чтобы validate_policy() в server-mode видел именно эту политику.
+    _policy_path = os.environ.get("GATEKEEPER_POLICY", DEFAULT_POLICY)
+    _data_path = os.environ.get("GATEKEEPER_DATA", DEFAULT_DATA)
+    _args = sys.argv[1:]
+    for _i, _a in enumerate(_args):
+        if _a == "--policy" and _i + 1 < len(_args):
+            _policy_path = _args[_i + 1]
+        elif _a == "--data" and _i + 1 < len(_args):
+            _data_path = _args[_i + 1]
+    global GK
+    if _policy_path != os.environ.get("GATEKEEPER_POLICY", DEFAULT_POLICY) or \
+       _data_path != os.environ.get("GATEKEEPER_DATA", DEFAULT_DATA):
+        GK = Gatekeeper(
+            _load_policy_file(Path(_policy_path), fail_fast=True),
+            Path(_data_path),
+            fail_fast=True,
+        )
+
     # CLI-режим при явных аргументах
     if len(sys.argv) > 1 and sys.argv[1] in (
         "register-port", "register-timer", "register-service",

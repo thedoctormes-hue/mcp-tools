@@ -15,7 +15,6 @@ Set GATEKEEPER_SERVER_PATH to point the suite at an alternate server file
 import importlib.util
 import os
 import re
-import tempfile
 from pathlib import Path
 
 import pytest

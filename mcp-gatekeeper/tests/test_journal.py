@@ -8,7 +8,6 @@ Real interface: gk.journal(event) appends one JSONL line atomically
 
 import json
 
-import pytest
 
 REQUIRED_KEYS = ["request_id", "when", "what_for", "why", "agent", "project"]
 
