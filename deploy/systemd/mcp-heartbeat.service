@@ -1,6 +1,7 @@
 [Unit]
 Description=MCP Heartbeat Server (colony per-agent daily pull)
 Documentation=https://github.com/LabDoctorM/mcp-tools
+; gatekeeper lease: rk-1c12d0de83fd (port 8088, as_root bypass — data under /root mode 700)
 After=network.target
 
 [Service]
