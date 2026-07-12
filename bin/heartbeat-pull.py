@@ -1,70 +1,106 @@
 #!/usr/bin/env python3
-"""
-heartbeat-pull.py — thin CLI wrapper that hits the heartbeat MCP server over
-HTTP and prints ONLY the agent's summary_text.
-
-Why this exists: OpenClaw isolated cron sessions in this deployment do NOT
-execute MCP tools (the gateway does not route heartbeat__pull there), but they
-DO allow `exec`. So the "dumb heartbeat" runs THIS script via exec; the script
-calls the server, the server logs the pull in audit.log (proof), and prints the
-summary for the agent to relay to Telegram.
-
-Usage:  heartbeat-pull.py <agent>
-Prints: summary_text (the "Собор сердца" line + ✅/🔴 checklist)
-On error: prints a short "heartbeat unavailable" note (non-zero exit).
-"""
-import json
+# heartbeat-pull.py — клиент агента для получения стандартного задания
+# (health-check сервера+лабы) от MCP-сервера mcp-heartbeat.
+#
+# Сервер = настоящий MCP (FastMCP, streamable-http) на 127.0.0.1:8088,
+# эндпоинт протокола /mcp. Клиент говорит по MCP: initialize -> call_tool pull.
+#
+# Поведение (вариант «Гибрид», утверждён ЗавЛабом 2026-07-12):
+#   1. Дёрнуть pull(agent) через MCP.
+#   2. Если сервер жив — вывести summary_text (минималистичный health-check).
+#   3. Если сервер мёртв — одна попытка самолечения:
+#        systemctl start mcp-heartbeat.service, пауза, повторный pull.
+#      Если помогло — вывести summary_text.
+#      Если нет — вывести инструкцию ДЛЯ ОПЕРАТОРА (без вечного авто-рестарта).
+#
+# ВАЖНО: скрипт НИКОГДА не трогает gateway. Только mcp-heartbeat.service.
+import os
 import sys
-import urllib.request
+import json
+import time
+import asyncio
+import subprocess
 
-BASE = "http://127.0.0.1:8088/mcp"
-AGENTS = {
-    "kotolizator", "mangust", "raven", "owl",
-    "bestia", "streikbrecher", "dominika", "antcat",
-}
+from mcp import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+URL = os.environ.get("HB_URL", "http://127.0.0.1:8088/mcp")
+AGENT = sys.argv[1] if len(sys.argv) > 1 else "dominika"
+# Имя сервиса можно переопределить (для тестов / будущих серверов).
+SERVICE = os.environ.get("HB_SERVICE", "mcp-heartbeat.service")
+TIMEOUT = int(os.environ.get("HB_TIMEOUT", "8"))
+HEAL_WAIT = int(os.environ.get("HB_HEAL_WAIT", "3"))
 
 
-def _rpc(method, params=None, sid=None):
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
-                       "params": params or {}}).encode()
-    req = urllib.request.Request(BASE, data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json, text/event-stream")
-    if sid:
-        req.add_header("Mcp-Session-Id", sid)
-    resp = urllib.request.urlopen(req, timeout=10)
-    sid = resp.headers.get("Mcp-Session-Id") or sid
-    raw = resp.read().decode()
-    for line in raw.splitlines():
-        if line.startswith("data:"):
+def _extract_summary(result) -> "str | None":
+    """Достать summary_text из CallToolResult (structuredContent или текст)."""
+    sc = getattr(result, "structuredContent", None)
+    if isinstance(sc, dict) and "summary_text" in sc:
+        return sc.get("summary_text")
+    for c in getattr(result, "content", []) or []:
+        txt = getattr(c, "text", None)
+        if txt:
             try:
-                return json.loads(line[5:].strip()), sid
+                d = json.loads(txt)
+                if isinstance(d, dict) and "summary_text" in d:
+                    return d["summary_text"]
             except Exception:
-                pass
-    return None, sid
+                return txt
+    return None
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in AGENTS:
-        print("heartbeat unavailable: unknown agent")
-        sys.exit(1)
-    agent = sys.argv[1]
+async def _pull_once() -> "str | None":
+    async with streamablehttp_client(URL) as (read, write, _sid):
+        async with ClientSession(read, write) as session:
+            await asyncio.wait_for(session.initialize(), timeout=TIMEOUT)
+            result = await asyncio.wait_for(
+                session.call_tool("pull", {"agent": AGENT}), timeout=TIMEOUT
+            )
+            return _extract_summary(result)
+
+
+def _do_pull() -> "str | None":
     try:
-        _, sid = _rpc("initialize", {"protocolVersion": "2024-11-05",
-                                     "capabilities": {},
-                                     "clientInfo": {"name": "hb-pull", "version": "1.0"}})
-        res, _ = _rpc("tools/call", {"name": "pull", "arguments": {"agent": agent}}, sid)
-        payload = json.loads(res["result"]["content"][0]["text"])
-        print(payload["summary_text"])
-    except Exception as e:  # noqa
-        # Graceful degradation (ЗавЛаб requirement): when the server is down,
-        # do NOT crash, do NOT auto-restart it, do NOT re-call. Print clear
-        # recovery instructions addressed to the HUMAN OPERATOR, not the agent.
-        print("⚠️ heartbeat-сервер недоступен (127.0.0.1:8088) — ДЛЯ ОПЕРАТОРА:")
-        print("Поднять: systemctl start mcp-heartbeat.service")
-        print("Перепроверить: python3 /root/LabDoctorM/projects/mcp-tools/bin/heartbeat-pull.py " + agent)
-        sys.exit(1)
+        return asyncio.run(_pull_once())
+    except Exception:
+        return None
 
 
-if __name__ == "__main__":
-    main()
+def _operator_instruction():
+    print(f"⚠️ heartbeat-сервер недоступен (127.0.0.1:8088) — ДЛЯ ОПЕРАТОРА:")
+    print(f"Поднять: systemctl start {SERVICE}")
+    print(f"Перепроверить: python3 {os.path.abspath(__file__)} {AGENT}")
+
+
+def _try_heal() -> bool:
+    """Одна попытка самолечения. True, если systemctl start прошёл."""
+    try:
+        res = subprocess.run(
+            ["systemctl", "start", SERVICE],
+            capture_output=True, text=True, timeout=30,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+# --- 1. первая попытка ---
+summary = _do_pull()
+if summary:
+    print(summary)
+    sys.exit(0)
+
+# --- 2. сервер мёртв → гибрид: одна попытка самолечения ---
+print("⚠️ heartbeat-сервер недоступен — пробуем самолечение (1 попытка)...",
+      file=sys.stderr)
+
+if _try_heal():
+    time.sleep(HEAL_WAIT)
+    summary = _do_pull()
+    if summary:
+        print(summary)
+        sys.exit(0)
+
+# --- 3. самолечение не помогло → инструкция оператору ---
+_operator_instruction()
+sys.exit(1)
