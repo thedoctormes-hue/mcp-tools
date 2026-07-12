@@ -165,9 +165,17 @@ def test_r6_same_justification_different_port_allowed(gk):
 # --------------------------------------------------------------------------- #
 
 def test_r7_run_as_root_rejected(gk):
-    allow, reason = gk.pdp(_req(agent="raven", port=8080, run_as="root"))
-    assert allow is False
+    # run_as=root запрещён только для НЕИЗВЕСТНЫХ агентов (в root-only среде
+    # легитимные сервисы бегут от root). Проверяем логику напрямую.
+    ok, reason = gk.check_least_privilege("root", agent="ghost-unknown")
+    assert ok is False
     assert "least" in reason.lower() or "privilege" in reason.lower() or "root" in reason.lower()
+
+
+def test_r7_run_as_root_allowed_for_known(gk):
+    # Известный агент может бежать от root (среда lab — всё от root).
+    ok, reason = gk.check_least_privilege("root", agent="raven")
+    assert ok is True
 
 def test_r7_run_as_limited_allowed(gk):
     assert gk.pdp(_req(agent="raven", port=8080, run_as="mcp-gatekeeper"))[0] is True

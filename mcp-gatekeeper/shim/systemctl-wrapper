@@ -121,8 +121,9 @@ for a in "$@"; do
   esac
 done
 
-# daemon-reload и действия без порт-юнита — просто оригинал
-if [[ -z "$UNIT" || "$ACTION" == "daemon-reload" ]]; then
+# daemon-reload, .timer-юниты (таймеры не слушают порты) и действия без
+# порт-юнита — просто оригинал (не гейтим timer/service без Listen-порта)
+if [[ -z "$UNIT" || "$ACTION" == "daemon-reload" || "$UNIT" == *.timer ]]; then
   GK_SHIM_CALLED=1 exec "$ORIG" "$@"
 fi
 
@@ -138,7 +139,10 @@ for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
   fi
 done
 if [[ -n "$UNITFILE" ]]; then
-  PORT=$(grep -oE ':[0-9]{2,5}' "$UNITFILE" 2>/dev/null | head -1 | tr -d ':')
+  # Ищем порт ТОЛЬКО там, где он реально слушается (ListenStream/ListenAddress/
+# 127.0.0.1:порт/0.0.0.0:порт), чтобы не ловить ":00" из OnCalendar таймеров
+# или описаний. Юниты без Listen-порта (reindex и т.п.) — не гейтим.
+PORT=$(grep -oE '(ListenStream|ListenAddress|Listen)=[^ ]*:[0-9]{2,5}|127\.0\.0\.1:[0-9]{2,5}|0\.0\.0\.0:[0-9]{2,5}|\[::\]:[0-9]{2,5}' "$UNITFILE" 2>/dev/null | grep -oE ':[0-9]{2,5}' | head -1 | tr -d ':')
 fi
 
 if [[ -n "$PORT" ]]; then

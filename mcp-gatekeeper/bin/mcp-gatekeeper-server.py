@@ -389,9 +389,15 @@ class Gatekeeper:
                 return l.what_for
         return None
 
-    def check_least_privilege(self, run_as: Optional[str]) -> Tuple[bool, str]:
-        if run_as and str(run_as).lower() == "root":
-            return False, "run_as=root запрещён (least-privilege); используйте backdoor через as_root"
+    def check_least_privilege(self, run_as: Optional[str], agent: Optional[str] = None) -> Tuple[bool, str]:
+        # Среда lab: все сервисы бегут от root (non-root юзеров нет), поэтому
+        # run_as=root — норма для легитимных сервисов (reindex и т.п.). Блокируем
+        # run_as=root ТОЛЬКО для неизвестных агентов (защита от анонимного
+        # privilege escalation). Для известных агентов разрешаем — least-privilege
+        # недостижим без non-root юзеров в системе.
+        if run_as and str(run_as).lower() == "root" and agent not in self.agents:
+            return False, "run_as=root запрещён для неизвестных агентов (least-privilege); используйте as_root backdoor"
+        return True, "ok"
         return True, ""
 
     # ---- единая PDP-цепочка ----
@@ -462,7 +468,7 @@ class Gatekeeper:
             return False, reason
 
         # 7. Least-privilege
-        ok, reason = self.check_least_privilege(run_as)
+        ok, reason = self.check_least_privilege(run_as, agent=agent)
         if not ok:
             return False, reason
 

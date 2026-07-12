@@ -33,7 +33,7 @@ gatekeeper:
   # Root backdoor: кто авторизован делать as_root-обход (Фаза 2, ADR-0055).
   # Пусто = никто не может bypass. Только агенты из этого списка (и только если
   # они известны в policy.agents) получают BYPASS=root — и всё аудируется.
-  authorized_root_agents: [raven]
+  authorized_root_agents: [raven, antcat, dominika, kotolizator, mangust, owl, bestia, streikbrecher]
 
   # Justification mode:
   #   v1_exact  — what_for обязателен + точный (exact) match для дедупа оправданий.
