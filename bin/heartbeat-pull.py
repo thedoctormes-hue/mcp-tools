@@ -2,22 +2,24 @@
 # heartbeat-pull.py — клиент агента для получения стандартного задания
 # (health-check сервера+лабы) от MCP-сервера mcp-heartbeat.
 #
-# Сервер = настоящий MCP (FastMCP, streamable-http) на 127.0.0.1:8088,
-# эндпоинт протокола /mcp. Клиент говорит по MCP: initialize -> call_tool pull.
+# ECONOMY MODEL (ЗавЛаб, 2026-07-12): сервер обычно ВЫКЛЮЧЕН. Каждый крон
+# поднимает его на время запроса, забирает задачу и гасит — сервер крутится
+# не 24/7, а считанные секунды на прогон. Это и есть «Гибрид»: старт по
+# требованию вместо держания сервиса вечно живым.
 #
-# Поведение (вариант «Гибрид», утверждён ЗавЛабом 2026-07-12):
-#   1. Дёрнуть pull(agent) через MCP.
-#   2. Если сервер жив — вывести summary_text (минималистичный health-check).
-#   3. Если сервер мёртв — одна попытка самолечения:
-#        systemctl start mcp-heartbeat.service, пауза, повторный pull.
-#      Если помогло — вывести summary_text.
-#      Если нет — вывести инструкцию ДЛЯ ОПЕРАТОРА (без вечного авто-рестарта).
+# Поток на один вызов:
+#   1. если сервер не поднят -> systemctl start (одна попытка)
+#   2. pull(agent) через MCP
+#   3. вывести summary_text
+#   4. systemctl stop (экономия: гасим)
+# Если start или pull не удались -> инструкция ДЛЯ ОПЕРАТОРА, сервер гасим.
 #
 # ВАЖНО: скрипт НИКОГДА не трогает gateway. Только mcp-heartbeat.service.
 import os
 import sys
 import json
 import time
+import socket
 import asyncio
 import subprocess
 
@@ -29,7 +31,7 @@ AGENT = sys.argv[1] if len(sys.argv) > 1 else "dominika"
 # Имя сервиса можно переопределить (для тестов / будущих серверов).
 SERVICE = os.environ.get("HB_SERVICE", "mcp-heartbeat.service")
 TIMEOUT = int(os.environ.get("HB_TIMEOUT", "8"))
-HEAL_WAIT = int(os.environ.get("HB_HEAL_WAIT", "3"))
+START_WAIT = int(os.environ.get("HB_START_WAIT", "3"))
 
 
 def _extract_summary(result) -> "str | None":
@@ -66,14 +68,17 @@ def _do_pull() -> "str | None":
         return None
 
 
-def _operator_instruction():
-    print(f"⚠️ heartbeat-сервер недоступен (127.0.0.1:8088) — ДЛЯ ОПЕРАТОРА:")
-    print(f"Поднять: systemctl start {SERVICE}")
-    print(f"Перепроверить: python3 {os.path.abspath(__file__)} {AGENT}")
+def _server_up() -> bool:
+    try:
+        s = socket.create_connection(("127.0.0.1", 8088), timeout=2)
+        s.close()
+        return True
+    except Exception:
+        return False
 
 
-def _try_heal() -> bool:
-    """Одна попытка самолечения. True, если systemctl start прошёл."""
+def _try_start() -> bool:
+    """Одна попытка поднять сервер (он обычно выключен — это норма)."""
     try:
         res = subprocess.run(
             ["systemctl", "start", SERVICE],
@@ -84,23 +89,42 @@ def _try_heal() -> bool:
         return False
 
 
-# --- 1. первая попытка ---
-summary = _do_pull()
-if summary:
-    print(summary)
-    sys.exit(0)
+def _try_stop() -> None:
+    """Гасим сервер (экономия). Ошибки игнорируем."""
+    try:
+        subprocess.run(
+            ["systemctl", "stop", SERVICE],
+            capture_output=True, text=True, timeout=30,
+        )
+    except Exception:
+        pass
 
-# --- 2. сервер мёртв → гибрид: одна попытка самолечения ---
-print("⚠️ heartbeat-сервер недоступен — пробуем самолечение (1 попытка)...",
-      file=sys.stderr)
 
-if _try_heal():
-    time.sleep(HEAL_WAIT)
+def _operator_instruction():
+    print(f"⚠️ heartbeat-сервер недоступен (127.0.0.1:8088) — ДЛЯ ОПЕРАТОРА:")
+    print(f"Поднять вручную: systemctl start {SERVICE}")
+    print(f"Перепроверить: python3 {os.path.abspath(__file__)} {AGENT}")
+
+
+def main():
+    # сервер обычно выключен (экономия) — поднимаем на время запроса
+    if not _server_up():
+        if not _try_start():
+            _operator_instruction()
+            sys.exit(1)
+        time.sleep(START_WAIT)
+
     summary = _do_pull()
     if summary:
         print(summary)
+        _try_stop()  # экономия: гасим сервер
         sys.exit(0)
 
-# --- 3. самолечение не помогло → инструкция оператору ---
-_operator_instruction()
-sys.exit(1)
+    # pull не удался при поднятом сервере
+    _operator_instruction()
+    _try_stop()
+    sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
