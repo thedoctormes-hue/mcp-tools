@@ -1,0 +1,43 @@
+[Unit]
+Description=MCP Gatekeeper eBPF LSM socket_bind enforcement (ADR-0055 Фаза 3)
+Documentation=file:///root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/ebpf/README.md
+After=network.target mcp-gatekeeper.service
+Wants=mcp-gatekeeper.service
+# Limit crash-loop (matches mcp-gatekeeper.service convention).
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gatekeeper-ebpf \
+    --policy /root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/policies/policy_v1.yaml \
+    --leases /root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/data/leases.json \
+    --bpf-object /usr/local/lib/gatekeeper/bind.o \
+    --mode enforce \
+    --allow-current-listeners \
+    --reload-interval 5s
+WorkingDirectory=/usr/local/lib/gatekeeper
+
+# Fail-open: if the eBPF object cannot load/attach, the binary exits
+# (no hook is attached => NOTHING is blocked). systemd then gives up after
+# StartLimitBurst, leaving the box running without kernel enforcement.
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=30
+TimeoutStopSec=15
+# The loader needs CAP_BPF + CAP_SYS_ADMIN to load an LSM program.
+# Run as root; do NOT use a restricted user for this unit.
+AmbientCapabilities=CAP_BPF CAP_SYS_ADMIN
+# Least-privilege for the rest: no new privileges, locked system paths.
+# NOTE: do NOT set ProtectHome=true — the unit reads leases.json/policy
+# from /root/LabDoctorM (same as mcp-gatekeeper.service), which must stay
+# readable. ProtectSystem=strict keeps the FS read-only (we only read config
+# + write BPF maps via syscalls, no file writes needed).
+NoNewPrivileges=true
+ProtectSystem=strict
+# Logging via journal.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

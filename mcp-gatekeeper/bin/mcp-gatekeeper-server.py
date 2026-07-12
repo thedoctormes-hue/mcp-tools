@@ -167,6 +167,7 @@ class Gatekeeper:
         self.heartbeat_interval = float(gk.get("heartbeat_interval_sec", 60))
         self.lease_user = str(gk.get("lease_user", "mcp-gatekeeper"))
         self.allow_root_backdoor = bool(gk.get("allow_root_backdoor", True))
+        self.authorized_root_agents = list(gk.get("authorized_root_agents", []))
         self.justification_mode = str(gk.get("justification_mode", "v1_exact"))
         self.log_rate = int(gk.get("log_rate_limit_per_sec", 20))
         _rate_limiter.max = max(1, self.log_rate)
@@ -403,8 +404,17 @@ class Gatekeeper:
         run_as = req.get("run_as")
         as_root = bool(req.get("as_root", False))
 
-        # 9. Root backdoor (проверяется первым — обходит всё, но аудируется)
-        if as_root and self.allow_root_backdoor:
+        # 9. Root backdoor — ТОЛЬКО для авторизованных агентов (Фаза 2, ADR-0055).
+        # Обходит ВСЕ PDP-проверки, но строго аудируется как BYPASS=root.
+        # Запрещён для неизвестных/неавторизованных агентов (закрывает дыру 5).
+        if as_root:
+            if not self.allow_root_backdoor:
+                return False, "root backdoor отключён политикой (allow_root_backdoor=false)"
+            if agent not in self.authorized_root_agents:
+                return False, (
+                    f"агент '{agent}' НЕ авторизован для root-bypass (as_root); "
+                    f"разрешены только: {', '.join(self.authorized_root_agents) or '<никто>'}"
+                )
             return True, "BYPASS=root"
 
         # 1. Identity
@@ -629,6 +639,7 @@ class Gatekeeper:
     def _reject(self, action: str, req: Dict[str, Any], reason: str) -> Dict[str, Any]:
         return {
             "status": "REJECT",
+            "request_id": self._new_request_id(),
             "action": action,
             "agent": req.get("agent"),
             "project_id": req.get("project_id"),

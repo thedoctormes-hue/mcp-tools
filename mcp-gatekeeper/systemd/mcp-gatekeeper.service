@@ -28,11 +28,28 @@ TimeoutStartSec=30
 TimeoutStopSec=15
 MemoryMax=128M
 
-# Least-privilege: ресурсы выдаются «от ограниченного юзера». Раскомментируйте
-# и создайте юзера, чтобы сервер не шёл от root:
+# --- Hardening (Фаза 5 ADR-0055): RBAC/защита конфигурации (hole 2/8) ---
+# Файлы policy/leases — root:gatekeeper 640 (см. set-rbac.sh); процесс не может
+# их править/удалить. ProtectSystem=strict делает ФС read-only для процесса,
+# кроме явно разрешённых путей записи (data/ для leases.json и журнала).
+ProtectSystem=strict
+# data/ должен быть доступен на запись (lease-состояние + JSONL-журнал):
+ReadWritePaths=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/data
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+# Лишний сетевой доступ не нужен, но слушать 127.0.0.1:8888 надо — это разрешено.
+# (RestrictAddressFamilies не задаём, чтобы не сломать bind на localhost.)
+
+# Least-privilege (опционально): ресурсы выдаются «от ограниченного юзера»,
+# не от root. Раскомментируйте и создайте юзера:
 #   useradd --system --no-create-home --shell /usr/sbin/nologin mcp-gatekeeper
+#   chown -R mcp-gatekeeper:gatekeeper data
 # User=mcp-gatekeeper
-# Тогда data/ должен быть доступен этому юзеру (chown mcp-gatekeeper).
+# Тогда ReadWritePaths выше должен указывать на data/, доступный этому юзеру.
 
 # Log rate-limit реализован в коде (защита диска).
 StandardOutput=journal

@@ -1,45 +1,164 @@
 #!/usr/bin/env bash
-# gatekeeper shim: PATH-wrapper для systemctl (Слой 1, принудительный).
-# Перехватывает enable/start/restart юнитов -> pre-action check в mcp-gatekeeper (8888).
-# REJECT -> блокируем (порядок). ALLOW/ERROR/таймаут -> вызываем оригинал (fail-open).
+# =============================================================================
+# gatekeeper shim — MANDATORY mediation для systemctl (Фаза 1, ADR-0055).
+#
+# Установлен как /usr/bin/systemctl (оригинал systemd сохранён через dpkg-divert
+# как /usr/bin/systemctl.real). Любой вызов systemctl в системе проходит через
+# эту обёртку — обход мимо PATH невозможен (Фаза 1 закрывает дыры 1, 2).
+#
+# Логика:
+#   * self-call whitelist (Фаза 1): вызов от systemd (PPID==1), рекурсивный вызов
+#     (GK_SHIM_CALLED=1) и юниты самого gatekeeper/shim — пропускаются БЕЗ проверки
+#     (иначе бесконечный цикл / невозможность heal).
+#   * для enable/start/restart порт-несущего юнита: звоним gatekeeper через
+#     gk-register с РЕАЛЬНЫМ агентом (Фаза 2: AGENT_ID или дерево процессов,
+#     не хардкод shim). Gatekeeper проверяет пул именно по реальному агенту.
+#       - ALLOW           -> выполняем оригинал systemctl.
+#       - REJECT          -> НЕ выполняем, exit 1 (Фаза 4: fail-closed).
+#       - GATEKEEPER_DEAD*-> НЕ выполняем, exit 2 + контракт heal (ADR-0054).
+#       - иначе (ERROR/таймаут/пусто) -> НЕ выполняем, exit 2 (Фаза 4: fail-closed,
+#         не отступаем к fail-open).
+# =============================================================================
 set -u
-ORIG=/usr/bin/systemctl
+
+ORIG=/usr/bin/systemctl.real
 HELPER=/usr/local/bin/gk-register
 
-# self-loop: не перехватывать самих себя / gatekeeper / shim-юниты
+# --------------------------------------------------------------------------
+# Фаза 1: self-call whitelist (без него — бесконечный цикл / блок heal)
+# --------------------------------------------------------------------------
+SELF_CALL=0
+if [[ "${GK_SHIM_CALLED:-}" == "1" ]]; then
+  SELF_CALL=1
+fi
+
+# Юниты самого gatekeeper / shim — heal и path-unit не гейтим (чтобы heal работал)
 for a in "$@"; do
   case "$a" in
-    gatekeeper-shim.*|mcp-gatekeeper.*) exec "$ORIG" "$@" ;;
+    gatekeeper-shim.*|mcp-gatekeeper.*)
+      SELF_CALL=1
+      break
+      ;;
   esac
 done
 
+# Вызывающий — systemd (PID 1) или его непосредственное управление
+if [[ $SELF_CALL -eq 0 ]]; then
+  ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+  if [[ "$ppid" == "1" ]]; then
+    SELF_CALL=1
+  elif [[ -n "$ppid" ]]; then
+    pcomm=$(cat /proc/"$ppid"/comm 2>/dev/null | tr -d '\0')
+    case "$pcomm" in
+      systemd|systemctl|daemon-reload) SELF_CALL=1 ;;
+    esac
+  fi
+fi
+
+if [[ $SELF_CALL -eq 1 ]]; then
+  exec "$ORIG" "$@"
+fi
+
+# --------------------------------------------------------------------------
+# Фаза 2: реальный агент (НЕ хардкод shim)
+# --------------------------------------------------------------------------
+resolve_agent() {
+  # 1) AGENT_ID из окружения (установлен в окружении агента)
+  if [[ -n "${AGENT_ID:-}" ]]; then
+    echo "$AGENT_ID"
+    return
+  fi
+  # 2) поднимаемся вверх по дереву процессов, ищем AGENT_ID в environ предков
+  local pid=$$ ppid=""
+  for _ in $(seq 1 8); do
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [[ -z "$ppid" || "$ppid" == "1" || "$ppid" == "0" ]] && break
+    if grep -qa 'AGENT_ID=' /proc/"$ppid"/environ 2>/dev/null; then
+      local v
+      v=$(tr '\0' '\n' < /proc/"$ppid"/environ 2>/dev/null | sed -n 's/^AGENT_ID=//p' | head -1)
+      if [[ -n "$v" ]]; then
+        echo "$v"
+        return
+      fi
+    fi
+    pid="$ppid"
+  done
+  # 3) запасной вариант — имя процесса-родителя
+  ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
+  if [[ -n "$ppid" ]]; then
+    local c
+    c=$(cat /proc/"$ppid"/comm 2>/dev/null | tr -d '\0')
+    [[ -n "$c" ]] && { echo "$c"; return; }
+  fi
+  echo "unknown"
+}
+
+AGENT=$(resolve_agent)
+# Операторский fallback: если агента не удалось определить, можно задать
+# GK_DEFAULT_AGENT (по умолчанию — пусто => 'unknown' => gatekeeper отвергнет,
+# fail-closed). Не открывает дыру по умолчанию.
+if [[ "$AGENT" == "unknown" && -n "${GK_DEFAULT_AGENT:-}" ]]; then
+  AGENT="$GK_DEFAULT_AGENT"
+fi
+
+# root-bypass (Фаза 2): только если явно запрошено и агент авторизован в политике
+AS_ROOT_FLAG=""
+if [[ "${GK_AS_ROOT:-}" == "1" ]]; then
+  AS_ROOT_FLAG="--as-root"
+fi
+
+PROJECT="${GK_PROJECT:-$AGENT}"
+
+# --------------------------------------------------------------------------
+# Парсинг аргументов: action + unit
+# --------------------------------------------------------------------------
 ACTION=""; UNIT=""
 for a in "$@"; do
   case "$a" in
     enable|start|restart|daemon-reload) ACTION="$a" ;;
-    +*) UNIT="${a#+}"; ACTION="add" ;;
+    +*) UNIT="${a#+}"; ACTION="add-wants" ;;
     *.service|*.timer|*.socket) UNIT="$a" ;;
   esac
 done
 
-if [[ -n "$UNIT" && "$ACTION" != "daemon-reload" ]]; then
-  PORT=""
-  if [[ -f "/etc/systemd/system/$UNIT" ]]; then
-    PORT=$(grep -oE ':[0-9]{2,5}' "/etc/systemd/system/$UNIT" | head -1 | tr -d ':')
+# daemon-reload и действия без порт-юнита — просто оригинал
+if [[ -z "$UNIT" || "$ACTION" == "daemon-reload" ]]; then
+  GK_SHIM_CALLED=1 exec "$ORIG" "$@"
+fi
+
+# --------------------------------------------------------------------------
+# Извлечение порта из юнита (если есть)
+# --------------------------------------------------------------------------
+PORT=""
+UNITFILE=""
+for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
+  if [[ -f "$d/$UNIT" ]]; then
+    UNITFILE="$d/$UNIT"
+    break
   fi
-  if [[ -n "$PORT" ]]; then
-    DEC=$(timeout 5 "$HELPER" port "$PORT" "systemd $UNIT" "shim" "shim" 2>/dev/null)
-    if [[ "$DEC" == "REJECT" ]]; then
-      echo "gatekeeper shim: REJECT port $PORT for $UNIT — blocked (порядок нарушен?)" >&2
-      exit 1
-    fi
-    if [[ "$DEC" == GATEKEEPER_DEAD* ]]; then
-      echo "$DEC" >&2
-      echo "gatekeeper shim: сервер мертв. Выполни инструкцию heal, затем повтори enable/start." >&2
-      exit 2
-    fi
-    # ALLOW / ERROR / пусто -> продолжаем (fail-open)
+done
+if [[ -n "$UNITFILE" ]]; then
+  PORT=$(grep -oE ':[0-9]{2,5}' "$UNITFILE" 2>/dev/null | head -1 | tr -d ':')
+fi
+
+if [[ -n "$PORT" ]]; then
+  DEC=$(timeout 5 "$HELPER" port "$PORT" "systemd $UNIT" "$AGENT" "$PROJECT" $AS_ROOT_FLAG 2>/dev/null)
+  if [[ "$DEC" == "REJECT" ]]; then
+    echo "gatekeeper shim: REJECT port $PORT for $UNIT (agent=$AGENT) — blocked (порядок нарушен?)" >&2
+    exit 1
+  fi
+  if [[ "$DEC" == GATEKEEPER_DEAD* ]]; then
+    echo "$DEC" >&2
+    echo "gatekeeper shim: сервер мертв. Выполни инструкцию heal, затем повтори enable/start." >&2
+    exit 2
+  fi
+  # Фаза 4: fail-closed. Любой исход кроме явного ALLOW — блокируем.
+  if [[ "$DEC" != "ALLOW" ]]; then
+    echo "gatekeeper shim: порт $PORT для $UNIT НЕ подтверждён gatekeeper (agent=$AGENT, ответ='${DEC:-<пусто/таймаут>}') — blocked (fail-closed)." >&2
+    echo "gatekeeper shim: если нужно принудительно — задай AGENT_ID и/или GK_AS_ROOT=1 и повтори." >&2
+    exit 2
   fi
 fi
 
-exec "$ORIG" "$@"
+# Всё ок — выполняем оригинал (помечаем рекурсивный вызов).
+GK_SHIM_CALLED=1 exec "$ORIG" "$@"

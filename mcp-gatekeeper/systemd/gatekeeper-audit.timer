@@ -1,0 +1,15 @@
+[Unit]
+Description=Gatekeeper — Audit timer (каждые ~7 мин, ADR-0055 Фаза 6)
+Documentation=file:///root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/audit/README.md
+
+[Timer]
+# Каждые 7 минут (в диапазоне 5-10 мин по ADR). RandomizedDelaySec — чтобы не
+# бить точно в такт на многих хостах.
+OnCalendar=*:0/7
+RandomizedDelaySec=30
+# наверстать пропущенные проверки после простоя (перезагрузка и т.п.)
+Persistent=true
+Unit=gatekeeper-audit.service
+
+[Install]
+WantedBy=timers.target

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# gatekeeper shim: PATH-wrapper для crontab (Слой 1).
-# Перехват добавления заданий -> регистрация таймера в mcp-gatekeeper (8888).
+# =============================================================================
+# gatekeeper shim — PATH-wrapper для crontab (Слой 1, Фаза 2: реальный агент).
+# Перехват добавления заданий -> регистрация таймера-намерения в mcp-gatekeeper
+# (8888) с РЕАЛЬНЫМ агентом (AGENT_ID / PPID; не хардкод shim).
 # Таймеры не блокируем строго (PDP v1 не покрывает таймеры полностью), но аудируем.
+# =============================================================================
 set -u
 ORIG=/usr/bin/crontab
 HELPER=/usr/local/bin/gk-register
@@ -14,8 +17,9 @@ done
 
 # перехватываем только добавление/замену (-r, - -, файл)
 if [[ "$#" -ge 1 && ( "$1" == "-r" || "$1" == "-" || -f "$1" ) ]]; then
-  # регистрируем как таймер-намерение (project=shim)
-  timeout 5 "$HELPER" port 0 "crontab job" "shim" "shim" >/dev/null 2>&1 || true
+  # project/agent резолвятся в gk-register (auto) — реальный агент, не shim.
+  # Результат НЕ блокирует crontab (аудит only) — см. ADR-0055 Фаза 2.
+  timeout 5 "$HELPER" port 0 "crontab job" "auto" "auto" >/dev/null 2>&1 || true
 fi
 
 exec "$ORIG" "$@"

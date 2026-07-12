@@ -213,13 +213,26 @@ def test_r8_lease_timeout_releases(gk):
 
 
 # --------------------------------------------------------------------------- #
-# Rule 9 — Root backdoor (bypass all checks, audited BYPASS=root)
+# Rule 9 — Root backdoor (только авторизованные агенты, Фаза 2, ADR-0055)
 # --------------------------------------------------------------------------- #
 
-def test_r9_root_bypasses_identity_and_reserve(gk):
-    allow, reason = gk.pdp(_req(agent="ghost-xyz", port=5432, as_root=True))
+def test_r9_authorized_agent_root_bypasses_checks(gk):
+    # raven входит в policy.gatekeeper.authorized_root_agents -> bypass разрешён
+    allow, reason = gk.pdp(_req(agent="raven", port=5432, as_root=True))
     assert allow is True
     assert "root" in reason.lower()
+
+def test_r9_unauthorized_agent_root_rejected(gk):
+    # неавторизованный агент не может сделать as_root-bypass (закрывает дыру 5)
+    allow, reason = gk.pdp(_req(agent="ghost-xyz", port=5432, as_root=True))
+    assert allow is False
+    assert "не авторизован" in reason.lower() or "root" in reason.lower()
+
+def test_r9_disabled_backdoor_rejected(gk):
+    gk.allow_root_backdoor = False
+    allow, reason = gk.pdp(_req(agent="raven", port=5432, as_root=True))
+    assert allow is False
+    assert "отключён" in reason.lower() or "disabled" in reason.lower()
 
 def test_r9_root_register_sets_bypass_flag(gk):
     r = gk.register_port("raven", "lab", 8086, "emergency", as_root=True)

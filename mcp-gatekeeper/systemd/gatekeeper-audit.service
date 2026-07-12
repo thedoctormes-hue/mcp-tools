@@ -1,0 +1,17 @@
+[Unit]
+Description=Gatekeeper — Audit live listening ports (Слой 2.5, ADR-0055 Фаза 6)
+Documentation=file:///root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/audit/README.md
+After=network.target
+
+[Service]
+Type=oneshot
+# audit только видимость — не блокирует, не падает из-за алертов (exit 0 всегда)
+ExecStart=/usr/bin/bash /root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/audit/gk-audit.sh
+# алерты пишутся в /var/log/gk-audit.log, не в exit code
+SuccessExitStatus=0
+Restart=no
+# нужен root для ss -p (видеть PID/процесс слушающего сокета)
+User=root
+
+[Install]
+WantedBy=multi-user.target

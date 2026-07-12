@@ -1,0 +1,20 @@
+# ADR-0055 Фаза 5 — legacy polkit (.pkla) fallback
+# =============================================================
+# ВНИМАНИЕ: формат .pkla НЕ умеет фильтровать по конкретному юниту и глаголу.
+# Если раскомментировать секцию ниже, группа agents будет ЗАБЛОКИРОВАНА от
+# управления ВООБЩЕ ВСЕМИ systemd-юнитами (не только mcp-gatekeeper) — это
+# сломает легитимное управление своими юнитами агентами.
+#
+# Поэтому ЭТОТ ФАЙЛ НЕ АКТИВЕН ПО УМОЛЧАНИЮ. Используйте точное правило
+# polkit/10-gatekeeper.rules (rules.d). .pkla нужен только на очень старых
+# системах без движка rules.d и ТОЛЬКО если вы готовы к описанному ограничению.
+#
+# Чтобы активировать (не рекомендуется): раскомментируйте и положите файл в
+# /etc/polkit-1/localauthority/50-gatekeeper.pkla
+#
+# [Gatekeeper: deny agents all unit management]
+# Identity=unix-group:agents
+# Action=org.freedesktop.systemd1.manage-units
+# ResultAny=no
+# ResultInactive=no
+# ResultActive=no

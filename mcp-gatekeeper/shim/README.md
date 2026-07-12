@@ -4,28 +4,106 @@
 они вызывают `systemctl`/`crontab` как обычно, но shim невидимо проверяет
 каждый порт/таймер через mcp-gatekeeper (порт 8888) ДО применения.
 
-**Это не ограничение свободы — это помощь:** конфликты портов,Reserved-порты
+**Это не ограничение свободы — это помощь:** конфликты портов, Reserved-порты
 и перерасход квот блокируются автоматически, а нарушения попадают в журнал.
 
-## Слой 1 — принудительный перехват (gateway exec interception)
+Реализация соответствует **ADR-0055** (Phases 1, 2, 4). Полный threat-model и
+карта «дыра × фаза» — в `DoctorM_and_Ai/docs/adr/ADR-0055-gatekeeper-threat-model-mitigations.md`.
+
+---
+
+## Слой 1 — ОБЯЗАТЕЛЬНАЯ медиация (Фаза 1, ADR-0055)
 
 Файлы:
-- `systemctl-wrapper` → устанавливается как `/usr/local/bin/systemctl`
-  (приоритет в PATH перед `/usr/bin/systemctl` для агентов через gateway).
-- `crontab-wrapper` → устанавливается как `/usr/local/bin/crontab`.
+- `systemctl-wrapper` → устанавливается **как `/usr/bin/systemctl`** (обязательно для ВСЕХ).
+- `crontab-wrapper` → устанавливается как `/usr/local/bin/crontab` (PATH-intercept).
 - `gk-register` → лёгкий MCP-клиент (handshake + `register_port`/`register_timer`).
   Возвращает `ALLOW` / `REJECT` / `DEAD` (при недоступности Gatekeeper — контракт
   ADR-0054: `GATEKEEPER_DEAD {status:dead, heal, mandatory_retry}` + exit 2).
 
-Логика wrapper:
-1. Парсит аргументы (`enable`/`start`/`restart` + имя юнита).
-2. Извлекает порт из юнита (`:PORT` в `ExecStart`/`Environment`).
-3. Вызывает gatekeeper через `gk-register` (timeout 5s).
-4. `REJECT` → блокирует оригинал, возвращает ошибку агенту.
-5. `ALLOW` / `ERROR` (прочие ошибки) → fail-open, вызывает оригинал.
-   `DEAD` (Gatekeeper недоступен) → печатает контракт `GATEKEEPER_DEAD {...}` агенту,
-   exit 2, оригинал НЕ вызывается (по ADR-0054: агент обязан вылечить и повторить).
-6. Self-loop защита: не перехватывает `gatekeeper-shim.*` / `mcp-gatekeeper.*`.
+### Mandatory mediation (обход невозможен мимо PATH)
+Оригинальный `systemctl` systemd сохранён через `dpkg-divert`:
+
+```bash
+dpkg-divert --divert /usr/bin/systemctl.real --rename /usr/bin/systemctl
+install -m755 shim/systemctl-wrapper /usr/bin/systemctl
+```
+
+После этого ЛЮБОЙ вызов `systemctl` в системе идёт через обёртку — обход мимо
+PATH невозможен (закрывает дыры **1** и **2**). При будущем обновлении пакета
+`systemd` dpkg положит новый бинарь в `/usr/bin/systemctl.real`, а наша
+обёртка на `/usr/bin/systemctl` останется нетронутой.
+
+### Self-call whitelist (без него — бесконечный цикл / блок heal)
+Обёртка НЕ гейтит вызов, если:
+- установлен маркер `GK_SHIM_CALLED=1` (мы сами себя рекурсивно вызвали);
+- вызывающий — systemd (PPID == 1) или `systemctl`/`daemon-reload` как comm родителя;
+- действие направлено на юниты `gatekeeper-shim.*` / `mcp-gatekeeper.*` (heal, path-unit).
+
+Это позволяет systemd управлять собой и даёт возможность «вылечить» Gatekeeper
+(`systemctl restart mcp-gatekeeper`), не упершись в собственную блокировку.
+
+### Логика wrapper
+1. Парсит аргументы (`enable`/`start`/`restart` + имя юнита `.service/.timer/.socket`).
+2. Извлекает порт из юнита (`:PORT` в `ExecStart`/`Environment`/`LISTEN`).
+3. Вызывает gatekeeper через `gk-register` (timeout 5s) с **реальным агентом** (см. Фаза 2).
+4. `REJECT` → **блокирует**, exit 1 (Фаза 4: fail-closed).
+5. `GATEKEEPER_DEAD*` → **блокирует**, exit 2, печатает контракт `heal` (ADR-0054).
+   `DEAD` (Gatekeeper недоступен) → агент обязан вылечить и повторить.
+6. `ALLOW` → выполняет оригинал `/usr/bin/systemctl.real`.
+7. Любой иной исход (ERROR/таймаут/пусто) → **блокирует**, exit 2 (Фаза 4: fail-closed,
+   не отступает к fail-open).
+
+---
+
+## Фаза 2 — Реальный агент (закрывает дыры 4, 5)
+
+Раньше shim хардкодил `agent=shim`, у которого пул `[1,65535]` — то есть пулы
+НЕ проверялись по реальному агенту (дыра **4**: spoofing). Теперь shim
+подставляет **РЕАЛЬНОГО** агента, и Gatekeeper проверяет пул именно по нему.
+
+### Откуда берётся реальный агент
+`gk-register` (и wrapper) резолвят агента в порядке:
+1. `AGENT_ID` из окружения (установлен в окружении агента);
+2. обход вверх по дереву процессов — `AGENT_ID` в `environ` предков;
+3. comm процесса-родителя (PPID);
+4. иначе — `unknown` (Gatekeeper отвергнет → fail-closed).
+
+> **Требование к агентам:** агент ДОЛЖЕН экспортировать `AGENT_ID` в своём
+> окружении. Иначе его деплой будет отвергнут (`unknown` неизвестен политике).
+> Операторский fallback: `GK_DEFAULT_AGENT=<agent>` (по умолчанию пустой —
+> не открывает дыру).
+
+### `as_root` / bypass — только авторизованные + аудит (дыра 5)
+`root backdoor` (`as_root=True`) в Gatekeeper теперь разрешён **только** для
+агентов из `policy.gatekeeper.authorized_root_agents`. Неавторизованный агент
+получает `REJECT` с пояснением. Любой `as_root`-обход строго аудируется как
+`BYPASS=root` в журнале. Для операторского форсирования: `GK_AS_ROOT=1`
+(агент должен быть в `authorized_root_agents`).
+
+Поле политики (добавлено для Фазы 2, структурно не ломает `policy_v1.yaml`):
+
+```yaml
+gatekeeper:
+  allow_root_backdoor: true
+  authorized_root_agents: [raven]   # кто может делать as_root-обход
+```
+
+---
+
+## Фаза 4 — Fail-closed (доводит дыру 7)
+
+Дыра **7**: агент получил `REJECT`/`DEAD`-контракт, но всё равно задеплоил.
+Теперь shim при `REJECT`/`DEAD` (и при любом не-`ALLOW` исходе) **реально НЕ
+выполняет** `systemctl enable/start/restart` — exit 1 (REJECT) или exit 2 (DEAD/прочее).
+Блокировка сохраняется до heal, отступления к fail-open нет.
+
+Контракт **ADR-0054** сохранён: при недоступности Gatekeeper `gk-register`
+возвращает `GATEKEEPER_DEAD {status:dead, heal, mandatory_retry}`, shim печатает
+его агенту и exit 2 (оригал НЕ вызывается). Агент обязан вылечить
+(`systemctl restart mcp-gatekeeper`) и повторить `register_port`.
+
+---
 
 ## Слой 2 — реактивный backstop (systemd path-unit)
 
@@ -42,8 +120,10 @@ Self-loop: `gk-scan.sh` игнорирует `gatekeeper-shim.*` и `mcp-gatekee
 ## Установка
 
 ```bash
-# Слой 1
-install -m755 shim/systemctl-wrapper /usr/local/bin/systemctl
+# Слой 1 — ОБЯЗАТЕЛЬНАЯ медиация (Фаза 1)
+dpkg-divert --divert /usr/bin/systemctl.real --rename /usr/bin/systemctl
+install -m755 shim/systemctl-wrapper /usr/bin/systemctl
+install -m755 shim/systemctl-wrapper /usr/local/bin/systemctl   # копия для PATH
 install -m755 shim/crontab-wrapper /usr/local/bin/crontab
 install -m755 shim/gk-register /usr/local/bin/gk-register
 
@@ -55,28 +135,31 @@ systemctl daemon-reload
 systemctl enable --now gatekeeper-shim.path
 ```
 
-## Тестирование (пройдено)
+## Тестирование
 
-- ALLOW: `systemctl enable` юнита с портом 8081 (в пуле raven) → enabled OK.
-- REJECT: `systemctl enable` юнита с портом 8086 (reserved) → blocked.
-- Backstop: создание юнита напрямую в `/etc/systemd/system/` → path-unit
-  регистрирует его через gatekeeper (видно в `data/port-timer-log.jsonl`).
+- ALLOW: `AGENT_ID=raven systemctl enable <unit>` с портом 8081 (в пуле raven) → enabled.
+- REJECT (резерв): `AGENT_ID=raven systemctl enable <unit>` с портом 8086 → blocked (exit 1).
+- REJECT (не пул): `AGENT_ID=raven systemctl enable <unit>` с портом 8185 (пул owl) → blocked
+  (exit 1) — **реальный агент теперь проверяется по пулу** (Фаза 2).
+- REJECT (неизвестный агент): `systemctl enable <unit>` БЕЗ `AGENT_ID` → агент `unknown`/`sh`
+  отвергнут (exit 1) — spoofing закрыт (Фаза 2).
+- DEAD: при остановленном Gatekeeper `enable` порт-юнита → exit 2 + контракт `GATEKEEPER_DEAD`
+  (Фаза 4 + ADR-0054).
 
-## Ограничения
+## Ограничения / риски
 
-- Gatekeeper должен быть жив на `127.0.0.1:8888`. При недоступности `gk-register`
-  возвращает контракт `DEAD` (ADR-0054): агент получает инструкцию `heal` и обязан
-  повторить. Fail-open больше НЕ применяется при смерти сервера — агент сам лечит.
-- Gatekeeper видит только порты, прошедшие через него. Внешние сервисы
-  (например, snablab на 8200, не зарегистрированный через gatekeeper) НЕ видны —
-  нужно добавить их в `PORT_REGISTRY` / политику как reserved или агента.
-- В некоторых средах (exec через gateway) `systemctl enable` может вернуть
-  `Bad message` (glitch systemd, не shim) — wrapper корректно вызывает оригинал.
-- Слой 3 (seccomp-bpf/eBPF на `bind()`) — будущее, не реализован.
+- Gatekeeper должен быть жив на `127.0.0.1:8888`. При `DEAD` enable блокируется (fail-closed).
+  Восстановление: `systemctl restart mcp-gatekeeper`, затем повтор `register_port`.
+- **Агенты обязаны экспортировать `AGENT_ID`** — иначе их деплои порт-юнитов блокируются.
+- PPID==1 whitelist (systemd-инициированные вызовы) необходим, чтобы не блокировать boot/heal,
+  но означает: сервис, запущенный напрямую systemd и вызывающий `systemctl`, тоже не гейтится.
+  Доводится Фазой 3 (eBPF LSM `socket_bind`) и Фазой 5 (RBAC на обёртку).
+- Слой 3 (seccomp-bpf/eBPF на `bind()`) — будущее (Фаза 3, ADR-0055), не реализован здесь.
 
 ## Связь с ADR
 
-ADR-0053 (DoctorM_and_Ai/docs/adr/) — архитектура shim, fact-check паттернов,
-обоснование "польза, не тюрьма".
-ADR-0054 (DoctorM_and_Ai/docs/adr/) — протокол «dead + heal + mandatory_retry»:
-при недоступности Gatekeeper клиент возвращает контракт, агент лечит и повторяет.
+- **ADR-0055** (DoctorM_and_Ai/docs/adr/) — threat model и 6 фаз (здесь: Фазы 1, 2, 4).
+- ADR-0053 (DoctorM_and_Ai/docs/adr/) — архитектура shim, fact-check паттернов,
+  обоснование "польза, не тюрьма".
+- ADR-0054 (DoctorM_and_Ai/docs/adr/) — протокол «dead + heal + mandatory_retry»:
+  при недоступности Gatekeeper клиент возвращает контракт, агент лечит и повторяет.

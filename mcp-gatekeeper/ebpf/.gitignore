@@ -1,0 +1,8 @@
+# Build artifacts (compiled eBPF object + Go binary)
+bind.o
+gatekeeper-ebpf
+*.test
+
+# go build artifact (module-name binary)
+mcp-gatekeeper-ebpf
+bpf/bind.o

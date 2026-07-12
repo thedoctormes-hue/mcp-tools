@@ -1,0 +1,32 @@
+// ADR-0055 Фаза 5: запретить агентам (и всем, кроме root) останавливать /
+// выключать / маскировать юнит mcp-gatekeeper. Только root может stop/disable/mask.
+//
+// Установка (вручную, с подтверждения координатора):
+//   cp polkit/10-gatekeeper.rules /etc/polkit-1/rules.d/10-gatekeeper.rules
+//   chown root:root /etc/polkit-1/rules.d/10-gatekeeper.rules
+//   chmod 644      /etc/polkit-1/rules.d/10-gatekeeper.rules
+//   systemctl restart polkit
+//
+// Примечание: старые дистрибутивы без rules.d-движка (pkla-compat) см. 50-gatekeeper.pkla.
+// Точная фильтрация по unit+verb ВОЗМОЖНА только здесь (.pkla не умеет фильтр по юниту).
+
+polkit.addRule(function(action, subject) {
+    if (action.id !== "org.freedesktop.systemd1.manage-units") {
+        return undefined;
+    }
+    var unit = action.lookup("unit");
+    var verb = action.lookup("verb");
+    if (unit !== "mcp-gatekeeper.service") {
+        return undefined;
+    }
+    // Глаголы, которыми можно «убить» привратник (hole 8/2):
+    if (verb === "stop" || verb === "disable" || verb === "mask") {
+        // Только root (uid 0 / user "root") разрешён. Все остальные — запрет,
+        // включая участников группы agents.
+        if (subject.user === "root") {
+            return polkit.Result.YES;
+        }
+        return polkit.Result.NO;
+    }
+    return undefined;
+});
