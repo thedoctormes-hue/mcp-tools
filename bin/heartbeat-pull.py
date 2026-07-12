@@ -58,11 +58,11 @@ def main():
         print(payload["summary_text"])
     except Exception as e:  # noqa
         # Graceful degradation (ЗавЛаб requirement): when the server is down,
-        # do NOT crash or auto-restart it. Print clear recovery instructions
-        # for the human operator to act on.
-        print("⚠️ heartbeat-сервер недоступен (127.0.0.1:8088)")
+        # do NOT crash, do NOT auto-restart it, do NOT re-call. Print clear
+        # recovery instructions addressed to the HUMAN OPERATOR, not the agent.
+        print("⚠️ heartbeat-сервер недоступен (127.0.0.1:8088) — ДЛЯ ОПЕРАТОРА:")
         print("Поднять: systemctl start mcp-heartbeat.service")
-        print(f"Затем: python3 /root/LabDoctorM/projects/mcp-tools/bin/heartbeat-pull.py {agent}")
+        print("Перепроверить: python3 /root/LabDoctorM/projects/mcp-tools/bin/heartbeat-pull.py " + agent)
         sys.exit(1)
 
 
