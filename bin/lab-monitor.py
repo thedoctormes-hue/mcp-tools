@@ -132,7 +132,7 @@ def doctor_warnings():
 # ---------- Категории ----------
 
 def cat_agents():
-    out, live = [], 0
+    out = []
     for a in AGENTS:
         g = os.path.join(WORKSPACES, a, "grimoire.md")
         ok = os.path.isfile(g)
@@ -143,7 +143,6 @@ def cat_agents():
                     n = sum(1 for ln in f if ln.startswith("- "))
             except Exception:
                 n = 0
-        live += 1 if ok else 0
         mt = ""
         if ok:
             try:
@@ -152,9 +151,9 @@ def cat_agents():
                 mt = ""
         out.append(f"{a}: grimoire-файл {'на месте' if ok else 'ОТСУТСТВУЕТ'} ({n} строк{mt})")
     # ЖИВОСТЬ агентов доказана самим ФАКТОМ доставки этого отчёта (правило ЗавЛаба:
-    # пришёл = живы 100%, не пришёл = мертвы 100%). Поэтому ok всегда True при доставке.
-    # Ниже проверяем лишь ЦЕЛОСТНОСТЬ файлов-памяти (grimoire), не живость.
-    return (True, f"живы (отчёт дошёл); grimoire {live}/{len(AGENTS)} на месте", out)
+    # пришёл = живы 100%, не пришёл = мертвы 100%). В коротком отчёте — только факт
+    # доставки. Целостность файлов-памяти (grimoire) видна в !подробно, не в коротком.
+    return (True, "живы (отчёт дошёл)", out)
 
 
 def cat_openclaw():

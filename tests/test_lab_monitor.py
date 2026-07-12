@@ -25,7 +25,7 @@ def test_self_factcheck_catches_lies():
 
 def test_self_factcheck_clean():
     honest = [
-        (1, "Агенты", True, "живы (отчёт дошёл); grimoire 8/8 на месте", ["x: на месте"]),
+        (1, "Агенты", True, "живы (отчёт дошёл)", ["x: на месте"]),
         (2, "OpenClaw", True, "gateway работает, авто-восстановлений: 2 (норма <5)", []),
         (3, "MCP", True, "3/3 работают", ["mcp-memory (порт 8087): работает"]),
         (5, "Данные", True, "PG up; disk 81% (норма <85% — ок)", []),
