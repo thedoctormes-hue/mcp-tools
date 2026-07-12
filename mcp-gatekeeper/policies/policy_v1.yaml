@@ -16,6 +16,14 @@ gatekeeper:
   listen_host: "127.0.0.1"
   listen_port: 8888
 
+  # Глобальный разрешённый диапазон портов лаборатории (ADR-0047 P4).
+  # НЕ разбивается по агентам — любой агент/инфра может брать любой порт
+  # в диапазоне по назначению (API 8000-8099, вспомогательные 8100-8199,
+  # метрики 9000-9099). Главное — не резерв и не коллизия. Резерв и
+  # коллизии — зона reserve-проверки и ядра ОС, а не per-agent пула
+  # (уточнение ЗавЛаба 12.07: порты делятся по назначению, не по агентам).
+  allowed_port_range: [1024, 65535]
+
   # Lease: аренда ресурса агентом. Если heartbeat не приходит за lease_timeout_sec,
   # ресурс автоматически освобождается (lease-таймаут -> освобождение).
   lease_timeout_sec: 300
@@ -31,9 +39,8 @@ gatekeeper:
   allow_root_backdoor: true
 
   # Root backdoor: кто авторизован делать as_root-обход (Фаза 2, ADR-0055).
-  # Пусто = никто не может bypass. Только агенты из этого списка (и только если
-  # они известны в policy.agents) получают BYPASS=root — и всё аудируется.
-  authorized_root_agents: [raven, antcat, dominika, kotolizator, mangust, owl, bestia, streikbrecher]
+  # sh — легитимный инфра-вызыватель (systemctl restart от админа/ЗавЛаба).
+  authorized_root_agents: [raven, antcat, dominika, kotolizator, mangust, owl, bestia, streikbrecher, sh]
 
   # Justification mode:
   #   v1_exact  — what_for обязателен + точный (exact) match для дедупа оправданий.
@@ -51,31 +58,22 @@ gatekeeper:
 agents:
   - id: raven          # Ворон
     name: "Ворон"
-    port_range: [8080, 8099]
-  - id: shim           # Системный shim-аудитор (wrapper/path-unit)
-    name: "Shim"
-    port_range: [1, 65535]
+  - id: sh             # Системный shim/инфра (wrapper, systemd-restart от имени инфры)
+    name: "Shim/System"
   - id: antcat         # Муравей
     name: "Муравей"
-    port_range: [8100, 8119]
   - id: owl            # Сова
     name: "Сова"
-    port_range: [8120, 8139]
   - id: kotolizator    # Кот
     name: "КотОлизатор"
-    port_range: [8140, 8159]
   - id: mangust        # Мангуст
     name: "Мангуст"
-    port_range: [8160, 8169]
   - id: bestia         # Бестия
     name: "Бестия"
-    port_range: [8170, 8179]
   - id: dominika       # Доминика
     name: "Доминика"
-    port_range: [8180, 8189]
   - id: streikbrecher  # Штрейкбрехер
     name: "Штрейкбрехер"
-    port_range: [8190, 8199]
 
 # -----------------------------------------------------------------------------
 # Квоты (шаг 3 PDP): лимиты на агента.

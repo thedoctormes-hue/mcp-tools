@@ -174,6 +174,11 @@ class Gatekeeper:
         self.agents = {a["id"]: a for a in policy.get("agents", [])}
         self.quotas = policy.get("quotas", {"max_ports": 3, "max_timers": 5})
         self.reserve = policy.get("reserve", {"block_privileged_below": 1024, "blocked_ports": []})
+        # Глобальный разрешённый диапазон (ADR-0047 P4). Заменяет неверную
+        # концепцию per-agent port_range: порты делятся по НАЗНАЧЕНИЮ, а не по
+        # агентам. Любой агент может брать любой порт в диапазоне (ЗавЛаб 12.07).
+        apr = policy.get("gatekeeper", {}).get("allowed_port_range", [1024, 65535])
+        self.allowed_port_range = (int(apr[0]), int(apr[1]))
 
         self._load_state()
         if self.lease_user == "root":
@@ -184,16 +189,9 @@ class Gatekeeper:
         errs: List[str] = []
         if not self.agents:
             errs.append("policy.agents пуст — ни один агент неизвестен")
-        for aid, a in self.agents.items():
-            rng = a.get("port_range")
-            if not isinstance(rng, (list, tuple)) or len(rng) != 2:
-                errs.append(f"agent '{aid}': port_range должен быть [lo, hi]")
-                continue
-            lo, hi = int(rng[0]), int(rng[1])
-            if lo > hi:
-                errs.append(f"agent '{aid}': port_range lo>hi ({lo}>{hi})")
-            if lo < 1 or hi > 65535:
-                errs.append(f"agent '{aid}': port_range вне 1..65535")
+        # Примечание: per-agent port_range больше НЕ используется (ЗавЛаб 12.07 —
+        # порты делятся по назначению, а не по агентам). Диапазон проверяется
+        # глобально через gatekeeper.allowed_port_range в check_port_range.
         q = self.quotas
         if not isinstance(q.get("max_ports"), int) or q.get("max_ports", 0) < 1:
             errs.append("quotas.max_ports должен быть >=1")
@@ -284,12 +282,14 @@ class Gatekeeper:
         return (int(rng[0]), int(rng[1]))
 
     def check_port_range(self, agent: str, port: int) -> Tuple[bool, str]:
-        rng = self.agent_port_range(agent)
-        if rng is None:
-            return False, f"у агента '{agent}' нет пула портов"
-        lo, hi = rng
+        # Цель ограничения (ADR-0047/ADR-0055, уточнение ЗавЛаба 12.07):
+        # НЕ разделение портов по агентам, а защита резерва + аудит. Любой
+        # агент может брать любой порт в разрешённом диапазоне лаборатории
+        # (по назначению, без коллизий с резервом). Реальные коллизии
+        # (два сервиса на один порт) пресекает ядро ОС, не политика.
+        lo, hi = self.allowed_port_range
         if not (lo <= port <= hi):
-            return False, f"порт {port} вне пула агента '{agent}' ({lo}-{hi})"
+            return False, f"порт {port} вне разрешённого диапазона лаборатории ({lo}-{hi})"
         return True, ""
 
     def check_reserve(self, port: int) -> Tuple[bool, str]:
@@ -324,13 +324,12 @@ class Gatekeeper:
                 return False, f"квота таймеров исчерпана для '{agent}' ({c}/{lim})"
         return True, ""
 
-    def check_dedup_port(self, port: int) -> Tuple[bool, str]:
-        for l in self.leases.values():
-            if l.port == port:
-                return False, (
-                    f"порт {port} уже занят агентом '{l.agent}' "
-                    f"(project={l.project_id}, request_id={l.request_id})"
-                )
+    def check_dedup_port(self, port: int, agent: str = "") -> Tuple[bool, str]:
+        # Реальные коллизии (два сервиса на один порт) пресекает ЯДРО ОС: systemd
+        # не поднимет второй инстанс на занятом порту. Задача gatekeeper — реестр
+        # + аудит, а не OS-collision-cop. Поэтому повторная регистрация того же
+        # порта (например, restart сервиса) = refresh, а не отказ. Межсервисные
+        # конфликты ловит ядро, не политика (ЗавЛаб 12.07).
         return True, ""
 
     def check_dedup_timer(self, action: str, schedule: str) -> Tuple[bool, str]:
@@ -343,10 +342,7 @@ class Gatekeeper:
         return True, ""
 
     def _suggest_free_port(self, agent: str) -> Optional[int]:
-        rng = self.agent_port_range(agent)
-        if not rng:
-            return None
-        lo, hi = rng
+        lo, hi = self.allowed_port_range
         taken = {l.port for l in self.leases.values() if l.port is not None}
         for p in range(lo, hi + 1):
             if p < int(self.reserve.get("block_privileged_below", 1024)):
@@ -443,7 +439,7 @@ class Gatekeeper:
             ok, reason = self.check_quota(agent, "port")
             if not ok:
                 return False, reason
-            ok, reason = self.check_dedup_port(int(port))
+            ok, reason = self.check_dedup_port(int(port), agent)
             if not ok:
                 sug = self._suggest_free_port(agent)
                 extra = f"; предлагаю свободный: {sug}" if sug else ""
@@ -505,6 +501,12 @@ class Gatekeeper:
             self._audit("register_port", req, "REJECT", reason)
             return self._reject("register_port", req, reason)
         with self.lock:
+            # Идемпотентность (ЗавЛаб 12.07): повторная регистрация того же порта
+            # этим агентом (restart сервиса) обновляет lease, а не плодит новые
+            # — иначе квота быстро исчерпалась бы на инфра-рестартах.
+            for rid, l in list(self.leases.items()):
+                if l.agent == agent and l.port == int(port):
+                    del self.leases[rid]
             lease = self._mk_lease(req, "port", int(port), None,
                                    bypass="root" if as_root and self.allow_root_backdoor else None)
             self.leases[lease.request_id] = lease
