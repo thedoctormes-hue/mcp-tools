@@ -21,6 +21,21 @@
 # =============================================================================
 set -u
 
+# --------------------------------------------------------------------------
+# EMERGENCY KILL-SWITCH (ADR-0055 fail-open-with-audit)
+# Файл-флаг /etc/gatekeeper-shim.disabled ИЛИ env GATEKEEPER_SHIM_DISABLED=1
+# выключают shim: вызов пропускается напрямую к оригиналу systemctl БЕЗ
+# обращения к gatekeeper (fail-open), с аудит-записью в journal.
+#   touch /etc/gatekeeper-shim.disabled  -> шим ВЫКЛЮЧЕН
+#   rm    /etc/gatekeeper-shim.disabled  -> шим ВКЛЮЧЕН
+# Проверка стоит ДО всей логики gatekeeper, чтобы срабатывать даже при
+# мёртвом/недоступном gatekeeper.
+# --------------------------------------------------------------------------
+if [[ -f /etc/gatekeeper-shim.disabled ]] || [[ "${GATEKEEPER_SHIM_DISABLED:-0}" == "1" ]]; then
+  logger -t gatekeeper-shim "KILL-SWITCH: shim DISABLED (flag/env) -> passthrough to systemctl.real (fail-open, audited)" 2>/dev/null || true
+  exec /usr/bin/systemctl.real "$@"
+fi
+
 ORIG=/usr/bin/systemctl.real
 HELPER=/usr/local/bin/gk-register
 # Инфра/системные вызовы (без AGENT_ID, напр. ручной systemctl restart от
