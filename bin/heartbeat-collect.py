@@ -24,7 +24,6 @@ hung subsystem (e.g. ONNX embed) cannot stall the collector.
 import json
 import os
 import subprocess
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,8 +55,8 @@ def _check_grimoire(agent_dir: Path):
     g = agent_dir / "grimoire.md"
     if not g.is_file():
         return "fail", "grimoire.md отсутствует"
-    bullets = [l for l in g.read_text(errors="replace").splitlines()
-               if l.strip().startswith("- ")]
+    bullets = [ln for ln in g.read_text(errors="replace").splitlines()
+               if ln.strip().startswith("- ")]
     if not bullets:
         return "fail", "grimoire.md пуст (нет '- ' строк)"
     return "pass", f"{len(bullets)} строк '- '"
