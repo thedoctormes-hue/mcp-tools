@@ -220,19 +220,19 @@ def cat_openclaw():
     cls = classify_restarts(jtext, nrest, win)
     dw = doctor_warnings()
     if not active:
-        detail = f"gateway DOWN (история lifetime: {nrest}) 🔴"
+        detail = f"gateway DOWN (история lifetime: {nrest})"
     elif cls["classification"] == "auto":
-        detail = (f"gateway работает, АВТО-перезапусков за {win}: {cls['auto']} 🔴 "
+        detail = (f"gateway работает, АВТО-перезапусков за {win}: {cls['auto']} "
                   f"(systemd сам поднимал после падения — подозрительно, нужен root-cause)")
     elif cls["classification"] == "manual":
-        detail = (f"gateway работает, ручных рестартов за {win}: {cls['manual']} 💡 "
+        detail = (f"gateway работает, ручных рестартов за {win}: {cls['manual']} "
                   f"(сверься с памятью: ты сам рестартил в этом часу?)")
     else:
-        detail = f"gateway работает, перезапусков за {win}: 0 ✅"
+        detail = f"gateway работает, перезапусков за {win}: 0"
     if dw["new"]:
-        detail += f" ⚠️ самопроверка: {len(dw['new'])} НОВЫХ замечаний: {', '.join(w[:50] for w in dw['new'][:2])}"
+        detail += f"\n⚠️ самопроверка: {len(dw['new'])} НОВЫХ замечаний: {', '.join(w[:50] for w in dw['new'][:2])}"
     else:
-        detail += f" ⚠️ самопроверка: {dw['count']} старое безопасное замечание, новых нет"
+        detail += f"\n⚠️ самопроверка: {dw['count']} старое безопасное замечание, новых нет"
     ok = active and cls["classification"] != "auto" and not dw["new"]
     out = [f"перезапуски за {win}: total={cls['total']} (ручные ~{cls['manual']}, авто {cls['auto']}); "
            f"история lifetime: {nrest}"]
@@ -402,9 +402,8 @@ def self_factcheck(results):
         if cid == 2:
             if ok and "DOWN" in summary:
                 problems.append(f"{name}: ✅ но gateway DOWN")
-            m = re.search(r"авто-восстановлений: (\d+)", summary)
-            if m and int(m.group(1)) >= THRESHOLDS["nrestarts_ok"] and ok:
-                problems.append(f"{name}: ✅ но авто-восстановлений {m.group(1)} (норма <{THRESHOLDS['nrestarts_ok']})")
+            if ok and "АВТО-перезапусков за" in summary:
+                problems.append(f"{name}: ✅ но АВТО-перезапусков за окно (не должно быть при ok)")
             if ok and "НОВЫХ замечаний" in summary:
                 problems.append(f"{name}: ✅ но есть НОВЫЕ замечания доктора")
         elif cid == 3:
