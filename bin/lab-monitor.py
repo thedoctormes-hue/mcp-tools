@@ -17,6 +17,7 @@ lab-monitor.py — монитор лаборатории (Доминика)
 import datetime
 import json
 import os
+import random
 import re
 import socket
 import subprocess
@@ -30,6 +31,9 @@ os.makedirs(STATE_DIR, exist_ok=True)
 AGENTS = ["kotolizator","mangust","raven","owl","bestia","streikbrecher","dominika","antcat"]
 MSK = datetime.timezone(datetime.timedelta(hours=3))
 NOW = datetime.datetime.now(MSK)
+
+# сводный сборник цитат (ЗавЛаб: перенёс + смержил все grimoire.md -> nevermind.md)
+QUOTE_FILE = "/root/LabDoctorM/workspaces/dominika/nevermind.md"
 
 # === ПОРОГИ ЧЕСТНОСТИ (каждый — откуда норма) ===
 # Монитор обязан сверять значения именно с этими порогами, а не с "магическими числами".
@@ -73,6 +77,25 @@ CAT_HINT = {
     7: "Код проектов. git-dirty = несохранённые правки (рабочая норма, не сбой). Инциденты: «открыто» = без метки resolved/closed в шапке файла.",
     8: "Железо. load — загрузка CPU (норма < числа ядер). RAM — память занято/всего.",
 }
+
+
+def get_random_quote():
+    """Рандомная цитата из сводного гримуара (nevermind.md).
+    Честно: если файла/цитат нет — возвращает None (не выдумываем)."""
+    path = QUOTE_FILE
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as f:
+            lines = [ln[2:].strip() for ln in f if ln.startswith("- ") and len(ln) > 2]
+    except Exception:
+        return None
+    if not lines:
+        return None
+    q = random.choice(lines)
+    if len(q) > 300:
+        q = q[:300].rstrip() + "…"
+    return q
 
 
 def clean_line(s):
@@ -504,6 +527,10 @@ def build_report(full=False):
             lines.append(f"  → [{cid}] {name}: спавнить {ROUTE.get(cid,'?')} с набором [{ROUTE_SKILLS}]")
 
     if not full:
+        q = get_random_quote()
+        if q:
+            lines.append("")
+            lines.append(f"📜 Цитата часа: {q}")
         lines.append("ℹ️ полный дамп — !подробно")
         return "\n".join(lines)
 
@@ -567,6 +594,11 @@ def build_report(full=False):
     for w in dw["all"]:
         tag = "🔴 НОВОЕ" if w in dw["new"] else "старое"
         dl.append(f"    · [{tag}] {w[:110]}")
+
+    q = get_random_quote()
+    if q:
+        dl.append("")
+        dl.append(f"📜 Цитата часа: {q}")
 
     return "\n".join(dl)
 

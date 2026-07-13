@@ -3,6 +3,8 @@
 Запуск: python3 tests/test_lab_monitor.py
 """
 import importlib.util
+import os
+import tempfile
 
 SPEC = importlib.util.spec_from_file_location(
     "lab_monitor", "/root/LabDoctorM/projects/mcp-tools/bin/lab-monitor.py")
@@ -48,9 +50,48 @@ def test_clean_line():
     assert M.clean_line("  normal text  ") == "normal text"
 
 
+def test_get_random_quote_from_tmpfile():
+    d = tempfile.mkdtemp()
+    f = os.path.join(d, "q.md")
+    with open(f, "w") as fh:
+        fh.write("- Цитата один\n- Цитата два\n# заголовок\nобычный текст\n")
+    orig = M.QUOTE_FILE
+    M.QUOTE_FILE = f
+    try:
+        q = M.get_random_quote()
+        assert q in ("Цитата один", "Цитата два"), q
+    finally:
+        M.QUOTE_FILE = orig
+
+
+def test_get_random_quote_missing_file():
+    orig = M.QUOTE_FILE
+    M.QUOTE_FILE = "/root/LabDoctorM/projects/mcp-tools/tests/__nonexistent__.md"
+    try:
+        assert M.get_random_quote() is None
+    finally:
+        M.QUOTE_FILE = orig
+
+
+def test_get_random_quote_empty_file():
+    d = tempfile.mkdtemp()
+    f = os.path.join(d, "empty.md")
+    with open(f, "w") as fh:
+        fh.write("# только заголовок\nне bullet строка\n")
+    orig = M.QUOTE_FILE
+    M.QUOTE_FILE = f
+    try:
+        assert M.get_random_quote() is None
+    finally:
+        M.QUOTE_FILE = orig
+
+
 if __name__ == "__main__":
     test_self_factcheck_catches_lies()
     test_self_factcheck_clean()
     test_thresholds()
     test_clean_line()
+    test_get_random_quote_from_tmpfile()
+    test_get_random_quote_missing_file()
+    test_get_random_quote_empty_file()
     print("ALL TESTS PASSED")
