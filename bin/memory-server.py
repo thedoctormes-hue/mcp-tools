@@ -48,8 +48,10 @@ DEFAULT_THRESHOLD = 0.3  # mongoose п.6: отсекать шум
 IDLE_SHUTDOWN_SEC = int(os.environ.get("MCP_IDLE_SHUTDOWN_SEC", 0))
 # MCP_METRICS_PORT>0: side-car HTTP /health + /metrics на этом порту (0 = выкл).
 METRICS_PORT = int(os.environ.get("MCP_METRICS_PORT", 0))
-# MCP_BACKEND: "faiss" (по умолчанию) | "lab_search" (единый бэкенд, опц. расширение).
-BACKEND = os.environ.get("MCP_BACKEND", "faiss")
+# MCP_BACKEND: "hybrid" (по умолчанию, RRF над FAISS+keyword в процессе) |
+#             "faiss" (только семантика) | "lab_search" (subprocess в lab_search.py).
+# hybrid — ДЕФОЛТ: агенты получают семантику + лексический BM25-backup без OOM-subprocess.
+BACKEND = os.environ.get("MCP_BACKEND", "hybrid")
 # Путь к lab_search.py (HYBRID-бэкенд). Делегирование без форка алгоритма Штрейкбрехера.
 LAB_SEARCH_PATH = os.environ.get("LAB_SEARCH_PATH", "/root/LabDoctorM/projects/lab-memory/scripts")
 # Side-car HTTP для /startup-brief (ретаргетинг startupContext на эндпоинт индекса). 0 = выкл.
@@ -121,6 +123,11 @@ def load_index() -> bool:
             return False
         idx = faiss.read_index(INDEX_PATH)
         ki = _build_keyword_index(meta)
+        if idx.ntotal != len(meta):
+            # Рассинхрон index/meta (напр. своп в процессе) — не отдаём
+            # неконсистентный индекс; watchdog перезагрузит позже.
+            raise RuntimeError(
+                f"index/meta mismatch: ntotal={idx.ntotal} meta={len(meta)}")
         idx_mtime = os.path.getmtime(INDEX_PATH)
         meta_mtime = (
             os.path.getmtime(META_PATH) if os.path.exists(META_PATH)
@@ -264,6 +271,38 @@ def search_keyword(query: str, top_k: int,
     return out
 
 
+# ── Hybrid (in-process RRF: FAISS + keyword) ──────────────────────────
+def _rrf_merge(result_lists, k: int = 60):
+    """Reciprocal Rank Fusion над несколькими списками результатов.
+    Дедуп по id; итоговый ранг = сумма 1/(rank+k). Возвращает list[dict]."""
+    merged = {}
+    for rl in result_lists:
+        if not rl:
+            continue
+        for rank, item in enumerate(rl, start=1):
+            rid = item.get("id")
+            if rid is None:
+                continue
+            entry = merged.setdefault(rid, {"item": item, "rrf": 0.0})
+            entry["rrf"] += 1.0 / (rank + k)
+    ordered = sorted(merged.values(), key=lambda e: e["rrf"], reverse=True)
+    return [e["item"] for e in ordered]
+
+
+def search_hybrid(query: str, top_k: int, threshold: float,
+                 agent: str = "", project: str = "", source: str = "", date: str = "",
+                 metadata_only: bool = False):
+    """Гибрид: RRF(FAISS-семантика + keyword-лексический), оба in-process.
+    Лексический keyword_index всегда свежий (строится из текущей meta при загрузке).
+    Если ONNX-down (search_faiss=None) — деградирует до чистого keyword (без пустоты)."""
+    faiss_raw = search_faiss(query, top_k * 3, threshold, agent, project, source, date, metadata_only)
+    faiss_ok = faiss_raw is not None
+    faiss_res = faiss_raw or []
+    kw_res = search_keyword(query, top_k * 3, agent, project, source, date, metadata_only)
+    combined = _rrf_merge([faiss_res, kw_res])
+    return combined[:top_k], (not faiss_ok)
+
+
 # ── Unified backend delegation (Tier 0): lab_search HYBRID через subprocess ──
 def _lab_search_subprocess(query, top_k, agent="", project="", date="", metadata_only=False):
     """Делегирование в lab_search.py (HYBRID: FAISS+FTS5/RRF). Без форка алгоритма.
@@ -349,6 +388,25 @@ def search(query: str, top_k: int = 5, threshold: float = DEFAULT_THRESHOLD,
         except Exception as e:
             with _state_lock:
                 _state["last_error"] = f"lab_search backend failed ({e}); fallback to faiss"
+    if BACKEND == "hybrid":
+        try:
+            delegated, degraded = search_hybrid(query, top_k, threshold, agent, project, source, date, metadata_only)
+            out = {
+                "query": query,
+                "count": len(delegated),
+                "results": delegated,
+                "cache_hit": False,
+                "degraded": degraded,
+                "backend": "hybrid",
+            }
+            with _state_lock:
+                _state["cache"][cache_key] = out
+                _state["latencies"].append(time.time() - t0)
+            log_audit(query, time.time() - t0, False, len(delegated))
+            return out
+        except Exception as e:
+            with _state_lock:
+                _state["last_error"] = f"hybrid backend failed ({e}); fallback to faiss"
     results = search_faiss(query, top_k, threshold, agent, project, source, date, metadata_only)
     degraded = False
     if results is None:
