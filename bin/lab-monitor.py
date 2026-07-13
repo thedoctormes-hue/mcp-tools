@@ -593,7 +593,7 @@ def build_report(full=False):
             lines.append(f"  • [{cid}] {name}: {summary}")
 
     for cid, name, ok, summary, details in results:
-        lines.append(f"{name}: {'✅' if ok else '🔴'} {summary}")
+        lines.append(f"{'✅' if ok else '🔴'} {name}: {summary}")
 
     if sf:
         lines.append("🔴 САМОПРОВЕРКА (монитор поймал сам себя):")
