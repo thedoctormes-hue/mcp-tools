@@ -14,15 +14,14 @@ SPEC.loader.exec_module(M)
 
 def test_self_factcheck_catches_lies():
     fake = [
-        (1, "Агенты", True, "8/8 grimoire-файлов на месте",
-         ["dominika: grimoire-файл ОТСУТСТВУЕТ (0 строк)"]),
+        (1, "Агенты", True, "живы (отчёт дошёл)", []),
         (2, "OpenClaw", True, "gateway работает, АВТО-перезапусков за 1h: 9 (systemd сам поднимал)\n⚠️ самопроверка: 1 старое безопасное замечание, новых нет", []),
         (3, "MCP", True, "2/3 работают", ["mcp-memory (порт 8087): DOWN"]),
         (5, "Данные", True, "PG up; disk 96% (норма <85% — КРИТ)", []),
         (8, "Хост", True, "load 0.93 (1мин 9.50 — ВЫСОКАЯ, норма <4)", []),
     ]
     probs = M.self_factcheck(fake)
-    assert len(probs) == 5, probs  # 5 лжей из 5 поймано (Агенты-ложь теперь вне гарда по дизайну)
+    assert len(probs) == 5, probs  # 5 проблем из 5 записей (Агенты вне гарда: 0; OpenClaw 1; MCP 2; Данные 1; Хост 1)
 
 
 def test_self_factcheck_clean():

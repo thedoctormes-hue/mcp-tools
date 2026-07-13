@@ -81,7 +81,7 @@ ROUTE = {
 # COMPUTED-running-to-guidance — умные советы по провалам (cid -> текст)
 ADVICE = {
     1: lambda ok, s, d: "проверь heartbeat-крон агента и что агент отвечает (sessions_list)" if not ok
-        else "отчёт дошёл — агенты живы; сверься по целостности grimoire-файлов в !подробно",
+        else "отчёт дошёл — агенты живы (факт доставки); сверься при необходимости",
     2: lambda ok, s, d: "systemctl restart openclaw-gateway.service — ТОЛЬКО по прямой команде «рестарт»!"
         if "down" in s.lower()
         else ("root-cause: journalctl -u openclaw-gateway --since '-1h'" if "авто-перезапуск" in s.lower()
@@ -213,28 +213,11 @@ def doctor_warnings():
 # ---------- Категории ----------
 
 def cat_agents():
-    out = []
-    for a in AGENTS:
-        g = os.path.join(WORKSPACES, a, "grimoire.md")
-        ok = os.path.isfile(g)
-        n = 0
-        if ok:
-            try:
-                with open(g) as f:
-                    n = sum(1 for ln in f if ln.startswith("- "))
-            except Exception:
-                n = 0
-        mt = ""
-        if ok:
-            try:
-                mt = " · изм. " + datetime.datetime.fromtimestamp(os.path.getmtime(g)).strftime("%d.%m")
-            except Exception:
-                mt = ""
-        out.append(f"{a}: grimoire-файл {'на месте' if ok else 'ОТСУТСТВУЕТ'} ({n} строк{mt})")
     # ЖИВОСТЬ агентов доказана самим ФАКТОМ доставки этого отчёта (правило ЗавЛаба:
-    # пришёл = живы 100%, не пришёл = мертвы 100%). В коротком отчёте — только факт
-    # доставки. Целостность файлов-памяти (grimoire) видна в !подробно, не в коротком.
-    return (True, "живы (отчёт дошёл)", out)
+    # пришёл = живы 100%, не пришёл = мертвы 100%). Проверка целостности файлов-памяти
+    # (grimoire.md) убрана: файлы смержены в nevermind.md (ЗавЛаб, 2026-07), монитор
+    # искал несуществующие пути и лгал «ОТСУТСТВУЕТ» для всех агентов.
+    return (True, "живы (отчёт дошёл)", [])
 
 
 def classify_restarts(journal_text, lifetime_nrest, window="1h"):
@@ -496,8 +479,7 @@ def independent_probe():
     чтобы сверить с тем, что выдал монитор (ловит хардкод и раси).
     Возвращает {cid: строка_независимого_замера}."""
     probe = {}
-    ac = sum(1 for a in AGENTS if os.path.isfile(os.path.join(WORKSPACES, a, "grimoire.md")))
-    probe[1] = f"grimoire-файлов на диске: {ac}/{len(AGENTS)}"
+    probe[1] = "агенты: живость доказана доставкой отчёта (grimoire.md смержены в nevermind.md)"
     ra = run("systemctl is-active openclaw-gateway.service", timeout=6)
     probe[2] = f"gateway: {ra.stdout.strip() if ra else '?'}"
     r = run("systemctl list-units --type=service --state=running 'mcp-*' --no-legend --no-pager", timeout=8)
