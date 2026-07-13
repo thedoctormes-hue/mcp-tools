@@ -187,18 +187,27 @@ def test_all_categories_mocked():
 
 def test_full_no_summary_dup_for_ok():
     """В --full OK-категория НЕ повторяет summary в заголовке (числа только в деталях).
-    Но вторичные ⚠️-строки summary (самопроверка) сохраняются."""
+    Доктор-варнинги и самопроверка живут ТОЛЬКО в выделенной секции 🩺 внизу дампа
+    (не дублируются в [2] OpenClaw); диск % — только в 💾 (не в [5] Данные)."""
     orig = M.run
     M.run = _mock_run
+    # детерминированный доктор-варнинг, чтобы проверить отсутствие дубля текста
+    M.doctor_warnings = lambda: {"count": 1, "new": [],
+                                 "all": ["openclaw.json contains plaintext secret-bearing config"]}
     try:
         full = M.build_report(full=True)
         # Сервер: заголовок "✅ 8. Сервер" без ' — нагрузка CPU...'
         assert "✅ 8. Сервер" in full
         assert "8. Сервер — нагрузка" not in full, "summary дублируется в full-заголовке"
-        # OpenClaw: вторичная ⚠️-строка самопроверки сохранена
-        assert "⚠️ самопроверка" in full
+        # доктор-варнинг: текст ровно 1 раз (в секции 🩺), не дублируется в [2]
+        assert full.count("openclaw.json contains plaintext") == 1, "доктор-варнинг дублируется"
+        # самопроверка (⚠️-строка) в full НЕ наверху [2] — только в 🩺 внизу
+        assert "⚠️ самопроверка" not in full, "⚠️ самопроверка дублируется в [2]"
+        # диск % не дублируется: в [5] деталях нет 'disk /:', только в 💾 внизу
+        assert "disk /:" not in full, "диск % дублируется в [5]"
     finally:
         M.run = orig
+        del M.doctor_warnings
 
 
 if __name__ == "__main__":

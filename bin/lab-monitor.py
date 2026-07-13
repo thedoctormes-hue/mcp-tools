@@ -275,8 +275,8 @@ def cat_openclaw():
     ok = active and cls["classification"] != "auto" and not dw["new"]
     out = [f"перезапуски за {win}: total={cls['total']} (ручные ~{cls['manual']}, авто {cls['auto']}); "
            f"история lifetime: {nrest}"]
-    if dw["all"]:
-        out += [f"доктор: {w}" for w in dw["all"]]
+    # Предупреждения доктора выводятся целиком в выделенной секции 🩺 внизу полного дампа
+    # (и в коротком отчёте — через summary-строку ⚠️ самопроверка), чтобы не дублировать данные.
     return ok, detail, out
 
 
@@ -340,7 +340,6 @@ def cat_data():
     df = run("df -h / | tail -1 | awk '{print $5}'", timeout=6)
     disk = df.stdout.strip() if df else "?"
     pct = int(disk.rstrip("%")) if disk and disk.rstrip("%").isdigit() else 0
-    out.append(f"disk /: {disk}")
     ok = pg_up and sq_ok and pct < THRESHOLDS["disk_warn_pct"]
     disk_hint = "ок" if pct < THRESHOLDS["disk_warn_pct"] else ("тревога" if pct < THRESHOLDS["disk_crit_pct"] else "КРИТ")
     return ok, f"PostgreSQL {'up' if pg_up else 'DOWN'}; disk {disk} (норма <{THRESHOLDS['disk_warn_pct']}% — {disk_hint})", out
@@ -666,10 +665,6 @@ def build_report(full=False):
         # упавшая: summary в заголовке (причина тревоги сразу видна).
         if ok:
             dl.append(f"{icon[ok]} {cid}. {name}")
-            # сохранить вторичные ⚠️-строки summary (напр. самопроверка) — их нет в деталях
-            for extra in summary.split("\n")[1:]:
-                if extra.strip():
-                    dl.append(extra)
         else:
             dl.append(f"{icon[ok]} {cid}. {name} — {summary}")
         if cid in CAT_HINT:
