@@ -365,6 +365,7 @@ def cat_network():
 def cat_projects():
     out = []
     dirty = 0
+    repos_dirty = []
     for p in ["lab-memory", "mcp-tools", "api-hub", "DoctorM_and_Ai"]:
         d = os.path.join(PROJECTS, p)
         if not os.path.isdir(d):
@@ -372,11 +373,12 @@ def cat_projects():
         g = run("git status --porcelain | wc -l", timeout=8, cwd=d)
         n = int(g.stdout.strip()) if g and g.stdout.strip().isdigit() else 0
         dirty += n
-        if n:
-            out.append(f"{p}: {n} незакоммиченных")
+        repos_dirty.append((p, n))
     # инциденты: всего / закрыто / открыто (честный подсчёт, не всё = «открытое»)
     inc_total, inc_closed = 0, 0
+    open_incidents = []
     closed_re = re.compile(r"status:\s*(resolved|closed|done)", re.IGNORECASE)
+    now = datetime.datetime.now().timestamp()
     for root in [WORKSPACES, PROJECTS]:
         for _ in os.listdir(root) if os.path.isdir(root) else []:
             idir = os.path.join(root, _, "incidents")
@@ -386,17 +388,35 @@ def cat_projects():
                 if not f.endswith(".md"):
                     continue
                 inc_total += 1
+                fpath = os.path.join(idir, f)
                 try:
-                    with open(os.path.join(idir, f), errors="ignore") as fh:
+                    with open(fpath, errors="ignore") as fh:
                         head = fh.read(600)
-                    if closed_re.search(head):
-                        inc_closed += 1
+                    is_closed = bool(closed_re.search(head))
                 except Exception:
-                    pass
+                    is_closed = False
+                if is_closed:
+                    inc_closed += 1
+                else:
+                    open_incidents.append((f, _, os.path.getmtime(fpath)))
     inc_open = inc_total - inc_closed
-    out.append(f"инциденты: всего {inc_total}, закрыто {inc_closed}, открыто {inc_open}")
+    pct = round(inc_closed / inc_total * 100) if inc_total else 0
+    # детализация по репозиториям
+    for p, n in repos_dirty:
+        out.append(f"{p}: {n} файл(ов)" if n else f"{p}: 0 (чистый)")
+    out.append(f"инциденты: {inc_open} открыто / {inc_total} ({inc_closed} закрыто)")
+    # топ-5 старейших открытых инцидентов (застой)
+    oldest = sorted(open_incidents, key=lambda x: x[2])[:5]
+    if oldest:
+        out.append("старейшие открытые (застой):")
+        for f, owner, mtime in oldest:
+            days = int((now - mtime) / 86400)
+            out.append(f"  · {f[:-3]} ({owner}, {days} дн)")
+    repo_list = ", ".join(f"{p} {n}" for p, n in repos_dirty if n) or "нет"
     ok = True  # информационная категория (WIP/INC — базовый шум лаборатории, не сбой)
-    return ok, f"git-dirty: {dirty} файл(ов) — рабочая норма; инциденты: {inc_open} открыто / {inc_total} всего", out
+    summary = (f"незакоммичено {dirty} файлов ({repo_list}) — не сбой; "
+               f"инциденты {inc_open} открыто / {inc_total} ({inc_closed} закрыто, {pct}% решено)")
+    return ok, summary, out
 
 
 def cat_host():

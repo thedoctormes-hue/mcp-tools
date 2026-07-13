@@ -120,8 +120,18 @@ def test_classify_restarts_auto():
     assert cls["manual"] == 0
 
 
+def test_cat_projects_summary_format():
+    ok, summary, out = M.cat_projects()
+    assert ok is True
+    assert "незакоммичено" in summary, summary
+    assert "не сбой" in summary, summary
+    assert "решено" in summary, summary
+    assert any("инциденты:" in line for line in out), out
+
+
 if __name__ == "__main__":
     test_self_factcheck_catches_lies()
+    test_cat_projects_summary_format()
     test_self_factcheck_clean()
     test_thresholds()
     test_thresholds_extended()
