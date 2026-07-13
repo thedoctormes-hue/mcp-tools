@@ -287,14 +287,15 @@ def _lab_search_subprocess(query, top_k, agent="", project="", date="", metadata
 
 
 def _startup_brief(agent, limit, query=None):
-    """Курируемый блок для старта сессии агента. lab_search (HYBRID) | fallback faiss."""
+    """Курируемый блок для старта сессии агента. ВСЕГДА lab_search (HYBRID) —
+    вызов редкий (раз в старт сессии), поэтому subprocess-стоимость неважна,
+    а качество инъекции (BM25+semantic) — то, что нужно. Fallback на faiss."""
     q = query or f"{agent} identity role context responsibilities startup briefing"
-    if BACKEND == "lab_search":
-        try:
-            return _lab_search_subprocess(q, limit, agent=agent), "lab_search"
-        except Exception as e:
-            with _state_lock:
-                _state["last_error"] = f"startup_brief lab_search failed ({e}); faiss fallback"
+    try:
+        return _lab_search_subprocess(q, limit, agent=agent), "lab_search"
+    except Exception as e:
+        with _state_lock:
+            _state["last_error"] = f"startup_brief lab_search failed ({e}); faiss fallback"
     res = search_faiss(q, limit, 0.0, agent=agent) or []
     return res, "faiss"
 
