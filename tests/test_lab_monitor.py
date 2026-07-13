@@ -129,8 +129,67 @@ def test_cat_projects_summary_format():
     assert any("инциденты:" in line for line in out), out
 
 
+def _mock_run(cmd, **kw):
+    class R:
+        pass
+    r = R()
+    if "loadavg" in cmd:
+        r.stdout = "1.50 1.20 1.00"
+    elif "free -m" in cmd and "$4" in cmd:
+        r.stdout = "1000"
+    elif "free -m" in cmd:
+        r.stdout = "4000/7937 MB"
+    elif "docker ps" in cmd and "api-hub-db-1" in cmd:
+        r.stdout = "Up 4 days"
+    elif "docker ps" in cmd and "amnezia" in cmd:
+        r.stdout = "Up 4 days"
+    elif "docker ps" in cmd and "searxng" in cmd:
+        r.stdout = "Up 2 days (healthy)"
+    elif "docker ps" in cmd:
+        r.stdout = "searxng\napi-hub-db-1\namnezia-awg2"
+    elif "nproc" in cmd:
+        r.stdout = "4"
+    elif "systemctl show" in cmd and "NRestarts" in cmd:
+        r.stdout = "NRestarts=6"
+    elif "journalctl" in cmd:
+        r.stdout = ""
+    elif "lab_search.py health" in cmd:
+        r.stdout = '{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}'
+    elif "systemctl is-active reindex" in cmd:
+        r.stdout = "active"
+    elif "systemctl is-active" in cmd:
+        r.stdout = "active"
+    elif "openclaw doctor" in cmd:
+        r.stdout = ""
+    elif "openssl" in cmd:
+        r.stdout = "notAfter=Sep 26 12:42:01 2026 GMT"
+    elif "git status" in cmd:
+        r.stdout = "5"
+    else:
+        r.stdout = ""
+    return r
+
+
+def test_all_categories_mocked():
+    orig = M.run
+    M.run = _mock_run
+    try:
+        for fn in [M.cat_agents, M.cat_openclaw, M.cat_mcp, M.cat_memory,
+                   M.cat_data, M.cat_network, M.cat_projects, M.cat_host]:
+            ok, summary, out = fn()
+            assert isinstance(summary, str) and len(summary) > 0, (fn, summary)
+            assert isinstance(out, list)
+        short = M.build_report(full=False)
+        assert "ЛабМонитор" in short
+        full = M.build_report(full=True)
+        assert "полный дамп" in full
+    finally:
+        M.run = orig
+
+
 if __name__ == "__main__":
     test_self_factcheck_catches_lies()
+    test_all_categories_mocked()
     test_cat_projects_summary_format()
     test_self_factcheck_clean()
     test_thresholds()
