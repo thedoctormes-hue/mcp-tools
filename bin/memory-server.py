@@ -43,6 +43,14 @@ TRANSPORT = os.environ.get("MCP_TRANSPORT", "http")
 QUERY_MAX_LEN = 1000
 DEFAULT_THRESHOLD = 0.3  # mongoose п.6: отсекать шум
 
+# ── On-demand / observability (opt-in, experiment 2026-07-13) ───────────
+# MCP_IDLE_SHUTDOWN_SEC>0: сервер сам гасится после N сек простоя (on-demand).
+IDLE_SHUTDOWN_SEC = int(os.environ.get("MCP_IDLE_SHUTDOWN_SEC", 0))
+# MCP_METRICS_PORT>0: side-car HTTP /health + /metrics на этом порту (0 = выкл).
+METRICS_PORT = int(os.environ.get("MCP_METRICS_PORT", 0))
+# MCP_BACKEND: "faiss" (по умолчанию) | "lab_search" (единый бэкенд, опц. расширение).
+BACKEND = os.environ.get("MCP_BACKEND", "faiss")
+
 mcp = FastMCP("memory", host=os.environ.get("MCP_HOST", "127.0.0.1"), port=PORT)
 
 # ── State (in-memory, shared across all clients) ───────────────────────
@@ -60,6 +68,8 @@ _state = {
     "requests": 0,
     "latencies": deque(maxlen=200),  # для p95
     "last_error": None,
+    "last_activity": time.time(),    # on-demand: время последнего запроса
+    "degraded_total": 0,             # on-demand: счётчик деградаций (fallback)
 }
 _state_lock = threading.Lock()
 # Отдельный лок сериализует ТОЛЬКО перезагрузку индекса (тяжёлую), чтобы при
@@ -265,6 +275,7 @@ def search(query: str, top_k: int = 5, threshold: float = DEFAULT_THRESHOLD,
     query = query.strip()[:QUERY_MAX_LEN]
     with _state_lock:
         _state["requests"] += 1
+        _state["last_activity"] = time.time()
     cache_key = f"{query.lower().strip()}|{top_k}|{round(threshold, 2)}|{agent}|{project}|{source}|{date}|{metadata_only}"
     # Проверяем свежесть ДО чтения кэша: если индекс на диске сменился,
     # _ensure_fresh_index перезагрузит его и очистит кэш (load_index чистит
@@ -283,6 +294,8 @@ def search(query: str, top_k: int = 5, threshold: float = DEFAULT_THRESHOLD,
     degraded = False
     if results is None:
         degraded = True
+        with _state_lock:
+            _state["degraded_total"] += 1
         results = search_keyword(query, top_k, agent, project, source, date, metadata_only)
     out = {
         "query": query,
@@ -413,12 +426,92 @@ def _ensure_fresh_index() -> bool:
         return load_index()
 
 
+# ── On-demand: idle-shutdown + observability side-car (opt-in) ───────────
+def _idle_shutdown_watchdog():
+    """Гасит процесс после IDLE_SHUTDOWN_SEC сек простоя. Флаг=0 → no-op.
+    on-demand паттерн: сервер не висит впустую, экономит ~350MB RAM."""
+    if IDLE_SHUTDOWN_SEC <= 0:
+        return
+    while True:
+        time.sleep(max(5, IDLE_SHUTDOWN_SEC // 10))
+        with _state_lock:
+            last = _state.get("last_activity") or time.time()
+        idle = time.time() - last
+        if idle >= IDLE_SHUTDOWN_SEC:
+            os._exit(0)  # юнит Restart=no не воскрешает
+
+
+import http.server
+import socketserver
+from urllib.parse import urlparse
+
+
+def _metrics_text() -> str:
+    with _state_lock:
+        req = _state["requests"]; hits = _state["cache_hits"]
+        misses = _state["cache_misses"]; deg = _state["degraded_total"]
+        idx = _state["index"]; lats = list(_state["latencies"])
+        ready = int(bool(_state["ready"]))
+    # _disk_index_changed() сам берёт _state_lock -> вызываем ВНЕ лока,
+    # иначе re-entrant deadlock (threading.Lock не реентерабелен).
+    stale = int(_disk_index_changed())
+    p95 = 0.0
+    if lats:
+        sl = sorted(lats); p95 = sl[min(int(len(sl) * 0.95), len(sl) - 1)]
+    return (
+        f"mcp_up 1\n"
+        f"mcp_ready {ready}\n"
+        f"mcp_requests_total {req}\n"
+        f"mcp_cache_hits_total {hits}\n"
+        f"mcp_cache_misses_total {misses}\n"
+        f"mcp_degraded_total {deg}\n"
+        f"mcp_p95_latency_seconds {p95:.4f}\n"
+        f"mcp_index_ntotal {idx.ntotal if idx else 0}\n"
+        f"mcp_index_stale {stale}\n"
+    )
+
+
+class _MetricsHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        p = urlparse(self.path).path
+        if p == "/health":
+            with _state_lock:
+                body = json.dumps({
+                    "up": True,
+                    "ready": bool(_state["ready"]),
+                    "index_ntotal": _state["index"].ntotal if _state["index"] else 0,
+                    "degraded_total": _state["degraded_total"],
+                }).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json")
+        elif p == "/metrics":
+            body = _metrics_text().encode()
+            self.send_response(200); self.send_header("Content-Type", "text/plain; version=0.0.4")
+        else:
+            body = b'{"error":"not found"}'; self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+
+
+def _start_metrics_server():
+    if METRICS_PORT <= 0:
+        return
+    socketserver.TCPServer.allow_reuse_address = True
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", METRICS_PORT), _MetricsHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # Eager preload at startup: подхватываем то, что уже лежит на диске.
     # Дальше свежесть держится ленивой ревалидацией на каждом запросе
     # (_ensure_fresh_index) — без фонового поллинга и без inotify.
     load_index()
+    # On-demand / observability (opt-in): side-car метрики + idle-shutdown.
+    _start_metrics_server()
+    threading.Thread(target=_idle_shutdown_watchdog, daemon=True).start()
     if TRANSPORT == "stdio":
         mcp.run(transport="stdio")
     else:
