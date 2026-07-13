@@ -40,7 +40,9 @@ QUOTE_FILE = "/root/LabDoctorM/workspaces/dominika/nevermind.md"
 THRESHOLDS = {
     "disk_warn_pct": 85,    # норма <85%  (источник: ADR-039, практика ротации диска лаборатории)
     "disk_crit_pct": 95,    # КРИТ     >=95% (диск почти полон)
-    "nrestarts_ok": 5,      # авто-восстановлений <5 = норма (единичные падения допустимы)
+    "nrestarts_ok": 5,      # оставлено для ПРОЧИХ сервисов (накопленный lifetime-порог). Для gateway — см. оконную логику ниже.
+    "restart_window": "1h", # ОКНО отчёта = час (cron heartbeat-dominika: 0 * * * * MSK). Источник: логика ЗавЛаба 2026-07-13 — отчёт приходит каждый час, перезапуски считаем за это окно, чтобы сверять с памятью «я сам рестартил?».
+    "nrestarts_window_auto_ok": 0,  # авто-перезапусков (systemd сам поднял после падения) за окно: норма 0; >=1 → 🔴 подозрительно. Ручные рестарты ЗавЛаб знает/ожидает; авто = нежданное падение.
     "load_warn_x": 1.0,     # load1 < ядер            = ок
     "load_high_x": 2.0,     # load1 < 2×ядер          = повышенная (не сбой); >=2×ядер = тревога
 }
@@ -69,7 +71,7 @@ ROUTE_SKILLS = "research + labsearch + археолог-корней (root-cause
 # «Что это» простым языком — контекстная подсказка для каждой категории (для --full)
 CAT_HINT = {
     1: "САМ ФАКТ, что этот отчёт ДОШЁЛ = OpenClaw и агент-отправитель живы на 100% (не дошёл бы иначе). Правило ЗавЛаба: пришёл отчёт → живы; не пришёл → мертвы. Строка ниже лишь проверяет целостность файлов-памяти агентов на диске (НЕ живость).",
-    2: "Сам движок OpenClaw (гейтвей). Живость доказана самим фактом доставки отчёта. «авто-восстановлений» = сколько раз движок падал и система сама его подняла за всё время. Мало (<5) = ок; быстро растёт = нестабилен. baseline warn = известный шум.",
+    2: "Сам движок OpenClaw (гейтвей). Живость доказана самим фактом доставки отчёта. Перезапуски теперь считаются ЗА ОКНО ОТЧЁТА (1ч), а не за всю жизнь юнита: ручные рестарты (ты сам делал) — 💡 сверься с памятью; авто-перезапуски (systemd сам поднял после падения, маркер 'Scheduled restart') — 🔴 подозрительно, нужен root-cause. Исторический lifetime-счётчик (NRestarts) показан для справки, но тревогу НЕ управляет (горел бы вечно).",
     3: "MCP — внутренние сервисы-помощники: память/поиск, хранилище ключей, привратник портов. Список берётся живьём из systemd (не захардкожен).",
     4: "Семантический поиск лабы (ONNX + FAISS). vectors — сколько записей в индексе. reindex = авто-обновление.",
     5: "Базы и диск. disk — заполненность; норма <85%, тревога с 85%, крит 95%.",
@@ -179,6 +181,30 @@ def cat_agents():
     return (True, "живы (отчёт дошёл)", out)
 
 
+def classify_restarts(journal_text, lifetime_nrest, window="1h"):
+    """Чистая функция: классифицирует перезапуски gateway из текста journalctl за окно.
+    Возвращает dict: total/auto/manual/lifetime/window/classification.
+    classification: 'ok' (0 за окно) | 'manual' (были старты, но ручные) | 'auto' (systemd сам поднимал).
+    Маркер авто-перезапуска = 'Scheduled restart' (systemd Restart=always после падения).
+    Первый старт при загрузке сервера тоже считается 'Starting' без 'Scheduled restart'
+    и попадает в manual — это ок: загрузка не является падением.
+    """
+    total = len(re.findall(r"(Started|Starting) OpenClaw Gateway", journal_text))
+    auto = len(re.findall(r"Scheduled restart", journal_text))
+    manual = max(0, total - auto)
+    if auto >= 1:
+        classification = "auto"
+    elif total >= 1:
+        classification = "manual"
+    else:
+        classification = "ok"
+    return {
+        "total": total, "auto": auto, "manual": manual,
+        "lifetime": lifetime_nrest, "window": window,
+        "classification": classification,
+    }
+
+
 def cat_openclaw():
     r = run("systemctl is-active openclaw-gateway.service", timeout=6)
     active = bool(r and r.stdout.strip() == "active")
@@ -188,14 +214,31 @@ def cat_openclaw():
         m = re.search(r"NRestarts=(\d+)", nr.stdout)
         if m:
             nrest = m.group(1)
+    win = THRESHOLDS["restart_window"]
+    jl = run(f"journalctl -u openclaw-gateway.service --since '-{win}' --no-pager", timeout=15)
+    jtext = (jl.stdout or "") if jl else ""
+    cls = classify_restarts(jtext, nrest, win)
     dw = doctor_warnings()
-    detail = f"gateway {'работает' if active else 'DOWN'}, авто-восстановлений: {nrest} (норма <5)"
+    if not active:
+        detail = f"gateway DOWN (история lifetime: {nrest}) 🔴"
+    elif cls["classification"] == "auto":
+        detail = (f"gateway работает, АВТО-перезапусков за {win}: {cls['auto']} 🔴 "
+                  f"(systemd сам поднимал после падения — подозрительно, нужен root-cause)")
+    elif cls["classification"] == "manual":
+        detail = (f"gateway работает, ручных рестартов за {win}: {cls['manual']} 💡 "
+                  f"(сверься с памятью: ты сам рестартил в этом часу?)")
+    else:
+        detail = f"gateway работает, перезапусков за {win}: 0 ✅"
     if dw["new"]:
         detail += f" ⚠️ самопроверка: {len(dw['new'])} НОВЫХ замечаний: {', '.join(w[:50] for w in dw['new'][:2])}"
     else:
         detail += f" ⚠️ самопроверка: {dw['count']} старое безопасное замечание, новых нет"
-    ok = active and nrest.isdigit() and int(nrest) < THRESHOLDS["nrestarts_ok"] and not dw["new"]
-    return ok, detail, [f"доктор: {w}" for w in dw["all"]] if dw["all"] else []
+    ok = active and cls["classification"] != "auto" and not dw["new"]
+    out = [f"перезапуски за {win}: total={cls['total']} (ручные ~{cls['manual']}, авто {cls['auto']}); "
+           f"история lifetime: {nrest}"]
+    if dw["all"]:
+        out += [f"доктор: {w}" for w in dw["all"]]
+    return ok, detail, out
 
 
 def cat_mcp():

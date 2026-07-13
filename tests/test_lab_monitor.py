@@ -86,11 +86,50 @@ def test_get_random_quote_empty_file():
         M.QUOTE_FILE = orig
 
 
+def test_thresholds_extended():
+    t = M.THRESHOLDS
+    assert t["restart_window"] == "1h"
+    assert t["nrestarts_window_auto_ok"] == 0
+    # nrestarts_ok оставлен для прочих сервисов (накопленный lifetime-порог)
+    assert t["nrestarts_ok"] == 5
+
+
+def test_classify_restarts_ok():
+    cls = M.classify_restarts("", "6", "1h")
+    assert cls["classification"] == "ok"
+    assert cls["total"] == 0 and cls["auto"] == 0 and cls["manual"] == 0
+    assert cls["lifetime"] == "6"
+
+
+def test_classify_restarts_manual():
+    text = "Starting OpenClaw Gateway.\nStarted OpenClaw Gateway.\nStopping OpenClaw Gateway.\nStarting OpenClaw Gateway."
+    cls = M.classify_restarts(text, "6", "1h")
+    assert cls["classification"] == "manual"
+    assert cls["total"] == 3
+    assert cls["auto"] == 0
+    assert cls["manual"] == 3
+
+
+def test_classify_restarts_auto():
+    text = ("Main process exited, code=killed.\nScheduled restart.\n"
+            "Stopped OpenClaw Gateway.\nStarting OpenClaw Gateway.\n"
+            "Scheduled restart.\nStarting OpenClaw Gateway.")
+    cls = M.classify_restarts(text, "6", "1h")
+    assert cls["classification"] == "auto"
+    assert cls["auto"] == 2
+    assert cls["total"] == 2
+    assert cls["manual"] == 0
+
+
 if __name__ == "__main__":
     test_self_factcheck_catches_lies()
     test_self_factcheck_clean()
     test_thresholds()
+    test_thresholds_extended()
     test_clean_line()
+    test_classify_restarts_ok()
+    test_classify_restarts_manual()
+    test_classify_restarts_auto()
     test_get_random_quote_from_tmpfile()
     test_get_random_quote_missing_file()
     test_get_random_quote_empty_file()
