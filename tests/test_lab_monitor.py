@@ -190,6 +190,7 @@ def test_full_no_summary_dup_for_ok():
     Доктор-варнинги и самопроверка живут ТОЛЬКО в выделенной секции 🩺 внизу дампа
     (не дублируются в [2] OpenClaw); диск % — только в 💾 (не в [5] Данные)."""
     orig = M.run
+    orig_dw = M.doctor_warnings
     M.run = _mock_run
     # детерминированный доктор-варнинг, чтобы проверить отсутствие дубля текста
     M.doctor_warnings = lambda: {"count": 1, "new": [],
@@ -207,7 +208,294 @@ def test_full_no_summary_dup_for_ok():
         assert "disk /:" not in full, "диск % дублируется в [5]"
     finally:
         M.run = orig
-        del M.doctor_warnings
+        M.doctor_warnings = orig_dw
+
+
+class FakeRes:
+    def __init__(self, stdout=""):
+        self.stdout = stdout
+
+
+def test_doctor_warnings_parse_and_cache():
+    import tempfile
+    d = tempfile.mkdtemp()
+    orig_state = M.STATE_DIR
+    M.STATE_DIR = d
+    orig_run = M.run
+
+    def _r(cmd, **k):
+        if "openclaw doctor" in cmd:
+            return FakeRes("⚠ WARNING: something new here\n◇ skip me\n⚠ message tool unavailable")
+        return FakeRes("")
+    M.run = _r
+    try:
+        dw = M.doctor_warnings()
+        assert any("something new here" in w for w in dw["all"])
+        # message tool unavailable — в allowlist -> не NEW;
+        # "something new here" -> NEW (после clean_line с префиксом ⚠)
+        assert dw["new"] == ["⚠ something new here"], dw
+        assert dw["count"] == 2
+        assert os.path.isfile(os.path.join(d, "doctor.json"))
+    finally:
+        M.run = orig_run
+        M.STATE_DIR = orig_state
+
+
+def test_doctor_warnings_cache_hit():
+    import datetime as _dt
+    import json as _json
+    import tempfile
+    d = tempfile.mkdtemp()
+    orig_state = M.STATE_DIR
+    M.STATE_DIR = d
+    try:
+        cache = os.path.join(d, "doctor.json")
+        with open(cache, "w") as fh:
+            fh.write(_json.dumps({"ts": _dt.datetime.now().isoformat(),
+                                  "all": ["brand new warning xyz"], "count": 1, "new": []}))
+        dw = M.doctor_warnings()  # кэш свежий -> run не нужен, new пересчитывается
+        assert dw["new"] == ["brand new warning xyz"]
+    finally:
+        M.STATE_DIR = orig_state
+
+
+def test_clean_line_extra():
+    assert M.clean_line("│─ WARNING:  foo   bar  │") == "foo bar"
+
+
+def test_cat_openclaw_branches():
+    def make(active, journal, nrest):
+        def _r(cmd, **k):
+            if "is-active openclaw-gateway" in cmd:
+                return FakeRes(active)
+            if "NRestarts" in cmd:
+                return FakeRes(f"NRestarts={nrest}")
+            if "journalctl" in cmd:
+                return FakeRes(journal)
+            return FakeRes("")
+        return _r
+        return _r
+    orig_run, orig_dw = M.run, M.doctor_warnings
+    try:
+        M.doctor_warnings = lambda: {"count": 1, "new": [],
+                                     "all": ["openclaw.json contains plaintext secret-bearing config"]}
+        M.run = make("active", "", "6")
+        ok, s, o = M.cat_openclaw()
+        assert ok and "перезапусков за 1h: 0" in s
+        M.run = make("inactive", "", "6")
+        ok, s, o = M.cat_openclaw()
+        assert ok is False and "DOWN" in s
+        M.run = make("active", "Scheduled restart\nStarting OpenClaw Gateway", "6")
+        ok, s, o = M.cat_openclaw()
+        assert ok is False and "АВТО-перезапуск" in s
+        M.run = make("active", "Starting OpenClaw Gateway", "6")
+        ok, s, o = M.cat_openclaw()
+        assert "ручн" in s
+        M.doctor_warnings = lambda: {"count": 1, "new": ["NEW DOC WARN"], "all": ["NEW DOC WARN"]}
+        M.run = make("active", "", "6")
+        ok, s, o = M.cat_openclaw()
+        assert ok is False and "НОВЫХ замечаний" in s
+    finally:
+        M.run, M.doctor_warnings = orig_run, orig_dw
+
+
+def test_cat_mcp():
+    def make(services):
+        def _r(cmd, **k):
+            if "systemctl list-units" in cmd:
+                return FakeRes(services)
+            return FakeRes("")
+        return _r
+        return _r
+    orig_run, orig_port = M.run, M.port_ok
+    try:
+        M.run = make("mcp-memory.service\nmcp-apikeys.service\nmcp-gatekeeper.service\n")
+        M.port_ok = lambda p: True
+        ok, s, o = M.cat_mcp()
+        assert ok and s == "3/3 работают"
+        M.port_ok = lambda p: p == 8087  # только memory отвечает
+        ok, s, o = M.cat_mcp()
+        assert ok is False and any("DOWN" in line for line in o)
+        M.run = make("mcp-foo.service\n")
+        M.port_ok = lambda p: True
+        ok, s, o = M.cat_mcp()
+        assert "работает (systemd)" in o[0]
+        M.run = make("")
+        ok, s, o = M.cat_mcp()
+        assert ok is False and "ни одного MCP" in s
+    finally:
+        M.run, M.port_ok = orig_run, orig_port
+
+
+def test_cat_data_disk():
+    for disk, ok_expected, hint in [("78%", True, "ок"), ("86%", False, "тревога"),
+                                     ("96%", False, "КРИТ"), ("?", True, "ок")]:
+        def _r(cmd, **k):
+            if "docker ps" in cmd and "api-hub-db-1" in cmd:
+                return FakeRes("Up 4 days")
+            if "df -h /" in cmd:
+                return FakeRes(disk)
+            return FakeRes("")
+        orig = M.run
+        M.run = _r
+        try:
+            ok, s, o = M.cat_data()
+            assert ok == ok_expected, (disk, ok, s)
+            assert hint in s, s
+        finally:
+            M.run = orig
+
+
+def test_cat_memory_invalid_json():
+    def _r(cmd, **k):
+        if "lab_search.py health" in cmd:
+            return FakeRes("not json at all")
+        return FakeRes("")
+    orig = M.run
+    M.run = _r
+    try:
+        ok, s, o = M.cat_memory()
+        assert ok is False
+    finally:
+        M.run = orig
+
+
+def test_cat_network_ssl_fail():
+    def _r(cmd, **k):
+        if "docker ps" in cmd and "amnezia" in cmd:
+            return FakeRes("Up 4 days")
+        if "openssl" in cmd:
+            return FakeRes("")
+        return FakeRes("")
+    orig_run, orig_port = M.run, M.port_ok
+    M.run = _r
+    M.port_ok = lambda p: True
+    try:
+        ok, s, o = M.cat_network()
+        assert "SSL" in s and "FAIL" in s, s
+    finally:
+        M.run, M.port_ok = orig_run, orig_port
+
+
+def test_independent_probe():
+    orig_run, orig_port = M.run, M.port_ok
+    M.run = _mock_run
+    M.port_ok = lambda p: True
+    try:
+        probe = M.independent_probe()
+        assert set(probe.keys()) == {1, 2, 3, 4, 5, 6, 7, 8}
+    finally:
+        M.run, M.port_ok = orig_run, orig_port
+
+
+def test_selftest_report():
+    orig_run, orig_port = M.run, M.port_ok
+    M.run = _mock_run
+    M.port_ok = lambda p: True
+    try:
+        rep = M.selftest_report()
+        assert "САМОПРОВЕРКА" in rep
+    finally:
+        M.run, M.port_ok = orig_run, orig_port
+
+
+def test_build_report_full_bottom_sections():
+    def _r(cmd, **k):
+        if "df -h -x" in cmd:
+            return FakeRes("/ 78% (свободно 13G)\n/var 50% (свободно 5G)")
+        if "docker ps --format" in cmd and "{{.Names}}|" in cmd:
+            return FakeRes("searxng|Up 3 days\napi-hub-db-1|Up 4 days")
+        if "openclaw doctor" in cmd:
+            return FakeRes("⚠ WARNING: new doctor issue\n◇ skip")
+        if "free -m" in cmd:
+            return FakeRes("4000 7937 1000 2000 4937")
+        if "loadavg" in cmd:
+            return FakeRes("1.50 1.20 1.00")
+        if "nproc" in cmd:
+            return FakeRes("4")
+        if "systemctl show" in cmd and "NRestarts" in cmd:
+            return FakeRes("NRestarts=6")
+        if "journalctl" in cmd:
+            return FakeRes("")
+        if "lab_search.py health" in cmd:
+            return FakeRes('{"faiss_loaded": true, "onnx_available": true, "vectors": 37596}')
+        if "systemctl is-active reindex" in cmd:
+            return FakeRes("active")
+        if "systemctl is-active" in cmd:
+            return FakeRes("active")
+        if "git status" in cmd:
+            return FakeRes("5")
+        if "docker ps" in cmd and "api-hub-db-1" in cmd:
+            return FakeRes("Up 4 days")
+        if "docker ps" in cmd and "amnezia" in cmd:
+            return FakeRes("Up 4 days")
+        if "docker ps" in cmd and "searxng" in cmd:
+            return FakeRes("Up 2 days (healthy)")
+        return FakeRes("")
+    orig_run, orig_q, orig_dw = M.run, M.get_random_quote, M.doctor_warnings
+    M.run = _r
+    M.get_random_quote = lambda: "тестовая цитата"
+    M.doctor_warnings = lambda: {"count": 1, "new": [], "all": ["new doctor issue"]}
+    try:
+        full = M.build_report(full=True)
+        assert "💾 Диск (реальные ФС):" in full
+        assert "/ 78%" in full
+        assert "🐳 Docker:" in full
+        assert "searxng: Up 3 days" in full
+        assert "🩺 Самопроверка движка" in full
+        assert "new doctor issue" in full
+        assert "📜 Цитата часа: тестовая цитата" in full
+    finally:
+        M.run, M.get_random_quote, M.doctor_warnings = orig_run, orig_q, orig_dw
+
+
+def test_build_report_with_fail():
+    orig_cats = M.CATEGORIES
+    failing = (1, "Агенты", lambda: (False, "agents DOWN — провал", ["detail line"]))
+    M.CATEGORIES = [failing if c[0] == 1 else c for c in orig_cats]
+    try:
+        short = M.build_report(full=False)
+        assert "🔴 провалы:" in short
+        assert "🔧 СОВЕТ" in short
+        full = M.build_report(full=True)
+        assert "🔴 ТРЕВОГИ:" in full
+    finally:
+        M.CATEGORIES = orig_cats
+
+
+def test_build_report_advice_gateway_down():
+    orig_cats = M.CATEGORIES
+    failing = (2, "OpenClaw", lambda: (False, "gateway DOWN — упал", ["detail"]))
+    M.CATEGORIES = [failing if c[0] == 2 else c for c in orig_cats]
+    try:
+        rep = M.build_report(full=False)
+        assert "systemctl restart openclaw-gateway" in rep
+    finally:
+        M.CATEGORIES = orig_cats
+
+
+def test_main_entrypoint():
+    import sys as _sys
+    import io
+    g = {
+        "__name__": "__main__",
+        "__file__": M.__file__,
+        "run": lambda cmd, **k: FakeRes("active" if "is-active" in cmd else ""),
+        "port_ok": lambda p, host="127.0.0.1", timeout=3: True,
+        "get_random_quote": lambda: "q",
+        "doctor_warnings": lambda: {"count": 0, "new": [], "all": []},
+    }
+    argv_save = _sys.argv
+    out_buf = io.StringIO()
+    old_out = _sys.stdout
+    _sys.argv = ["lab-monitor.py", "--full"]
+    try:
+        _sys.stdout = out_buf
+        exec(compile(open(M.__file__).read(), M.__file__, "exec"), g)
+    finally:
+        _sys.stdout = old_out
+        _sys.argv = argv_save
+    assert "ЛабМонитор" in out_buf.getvalue()
 
 
 if __name__ == "__main__":
@@ -225,4 +513,18 @@ if __name__ == "__main__":
     test_get_random_quote_from_tmpfile()
     test_get_random_quote_missing_file()
     test_get_random_quote_empty_file()
+    test_doctor_warnings_parse_and_cache()
+    test_doctor_warnings_cache_hit()
+    test_clean_line_extra()
+    test_cat_openclaw_branches()
+    test_cat_mcp()
+    test_cat_data_disk()
+    test_cat_memory_invalid_json()
+    test_cat_network_ssl_fail()
+    test_independent_probe()
+    test_selftest_report()
+    test_build_report_full_bottom_sections()
+    test_build_report_with_fail()
+    test_build_report_advice_gateway_down()
+    test_main_entrypoint()
     print("ALL TESTS PASSED")
