@@ -135,10 +135,8 @@ def _mock_run(cmd, **kw):
     r = R()
     if "loadavg" in cmd:
         r.stdout = "1.50 1.20 1.00"
-    elif "free -m" in cmd and "$4" in cmd:
-        r.stdout = "1000"
     elif "free -m" in cmd:
-        r.stdout = "4000/7937 MB"
+        r.stdout = "4000 7937 1000 2000 4937"
     elif "docker ps" in cmd and "api-hub-db-1" in cmd:
         r.stdout = "Up 4 days"
     elif "docker ps" in cmd and "amnezia" in cmd:

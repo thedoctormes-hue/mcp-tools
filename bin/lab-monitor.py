@@ -133,7 +133,7 @@ CAT_HINT = {
     5: "Базы и диск. disk — заполненность; норма <85%, тревога с 85%, крит 95%.",
     6: "Внешний доступ. VPN, метапоиск searxng, SSL-сертификат сайта (чтоб не протёк).",
     7: "Код проектов. git-dirty = несохранённые правки (рабочая норма, не сбой). Инциденты: «открыто» = без метки resolved/closed в шапке файла.",
-    8: "Железо. load — загрузка CPU (норма < числа ядер). RAM — память занято/всего.",
+    8: "Железо. load — загрузка CPU (норма < числа ядер). RAM — занято/всего; available = сколько реально доступно приложениям (free + reclaimable cache, buff/cache). total = used + free + buff/cache.",
 }
 
 
@@ -424,11 +424,15 @@ def cat_host():
     la = run("cat /proc/loadavg | awk '{print $1, $2, $3}'", timeout=5)
     load = la.stdout.strip() if la else "?"
     out.append(f"loadavg: {load}")
-    fr = run("free -m | awk '/Mem:/ {print $3\"/\"$2\" MB\"}'", timeout=5)
-    ram = fr.stdout.strip() if fr else "?"
-    fp = run("free -m | awk '/Mem:/ {print $4}'", timeout=5)
-    free_ram = fp.stdout.strip() if fp else "?"
-    out.append(f"RAM: {ram} (свободно {free_ram} MB)")
+    # RAM: used/total, free, buff/cache, available — чтобы уравнение сходилось на глаз
+    mem = run("free -m | awk '/Mem:/ {print $3, $2, $4, $6, $7}'", timeout=5)
+    used = total = free_m = buff = avail = "?"
+    if mem:
+        p = mem.stdout.split()
+        if len(p) >= 5:
+            used, total, free_m, buff, avail = p[0], p[1], p[2], p[3], p[4]
+    ram = f"{used}/{total} MB"
+    out.append(f"RAM: {ram} — used {used}; free {free_m}; buff/cache {buff}; available {avail} MB")
     dp = run("docker ps --format '{{.Names}}'", timeout=8)
     conts = dp.stdout.strip().splitlines() if dp and dp.stdout.strip() else []
     cont = str(len(conts))
@@ -453,7 +457,7 @@ def cat_host():
     out.append(f"ядер CPU: {cores} (нагрузка {load1} из {cores} = {pct}%, норма <100%)")
     ok = load1 < ncores*lh  # тревога только при load1 ≥ lh×ядер
     summary = (f"нагрузка CPU {load1} из {cores} ядер (~{pct}%, {load_hint}); "
-               f"память {ram} (свободно {free_ram} MB); контейнеры {cont} запущено")
+               f"память {ram} (доступно {avail} MB); контейнеры {cont} запущено")
     return ok, summary, out
 
 
