@@ -66,7 +66,63 @@ ROUTE = {
     7: "Штрейкбрехер",
     8: "Муравей",
 }
-ROUTE_SKILLS = "research + labsearch + археолог-корней (root-cause)"
+# маршрутизация категория(провал) -> кто релевантен для расследования
+ROUTE = {
+    1: "соответствующий агент + Мангуст (аналитик)",
+    2: "Котолизатор / Муравей",
+    3: "Муравей",
+    4: "Муравей / Ворон",
+    5: "Муравей",
+    6: "Бестия / Ворон",
+    7: "Штрейкбрехер",
+    8: "Муравей",
+}
+
+# COMPUTED-running-to-guidance — умные советы по провалам (cid -> текст)
+ADVICE = {
+    1: lambda ok, s, d: "проверь heartbeat-крон агента и что агент отвечает (sessions_list)" if not ok
+        else "отчёт дошёл — агенты живы; сверься по целостности grimoire-файлов в !подробно",
+    2: lambda ok, s, d: "systemctl restart openclaw-gateway.service — ТОЛЬКО по прямой команде «рестарт»!"
+        if "down" in s.lower()
+        else ("root-cause: journalctl -u openclaw-gateway --since '-1h'" if "авто-перезапуск" in s.lower()
+              else ("сверься с памятью: ты сам рестартил?" if "ручн" in s.lower()
+                    else "gateway ок — действий нет")),
+    3: lambda ok, s, d: "упавшие MCP: проверь systemctl status mcp-* и порты; при необходимости restart"
+        if not ok else "MCP ок — действий нет",
+    4: lambda ok, s, d: ("ONNX :8082 DOWN → systemctl status onnx-embedder.service; sudo journalctl -u onnx-embedder --since '-15m'"
+        if "onnx" in d.lower() and "down" in d.lower()
+        else ("lab_search FAIL → запусти reindex: python3 /root/LabDoctorM/projects/lab-memory/scripts/reindex.py --incremental"
+              if "fail" in d.lower() and "reindex active" not in d.lower()
+              else ("reindex уже идёт — НЕ запускай второй раз; дождись завершения"
+                    if "reindex active" in d.lower()
+                    else "проверь ONNX/embedding и lab_search vectors"))),
+    5: lambda ok, s, d: ("PG DOWN → systemctl status postgresql; sudo journalctl -u postgresql --since '-15m'"
+        if "pg" in d.lower() and "down" in d.lower()
+        else ("disk высокий → du -sh /var /tmp /root 2>/dev/null; найди и очисти (trash > rm), но сначала фактчек"
+              if "disk" in d.lower() and ("85" in d or "95" in d or "крит" in d.lower() or "высок" in d.lower())
+              else "сверься по diag (PG/disk)")),
+    6: lambda ok, s, d: ("VPN DOWN → systemctl status amnezia-awg2; проверь конфиг VPN"
+        if "vpn" in d.lower() and ("down" in d.lower() or "упал" in d.lower())
+        else ("searxng DOWN → systemctl status searxng; curl -s localhost:8889"
+              if "searxng" in d.lower() and ("down" in d.lower() or "упал" in d.lower())
+              else ("SSL истёк/FAIL → обнови сертификат (certbot renew / провайдер)"
+                    if "ssl" in d.lower() and ("истёк" in d.lower() or "expire" in d.lower() or "fail" in d.lower())
+                    else "сверься по diag (VPN/searxng/SSL)"))),
+    7: lambda ok, s, d: ("git-dirty — рабочая норма; если хочешь чисто — ./bin/lab-commit.sh <агент>"
+        if "git-dirty" in d.lower() or "git-dirty" in s.lower()
+        else ("инциденты открыты → сверься по projects/*/incidents, закрой или эскалируй"
+              if "инцидент" in d.lower()
+              else "сверься по diag (git/инциденты)")),
+    8: lambda ok, s, d: ("load высокий → htop — кто жрёт CPU; не убивай без понимания"
+        if "load" in d.lower() and ("высок" in d.lower() or "crit" in d.lower() or "крит" in d.lower())
+        else ("RAM высокая → free -m; найди процесс-пожиратель, не убивай systemd-сервисы"
+              if "ram" in d.lower() and ("высок" in d.lower() or "крит" in d.lower())
+              else ("docker DOWN → docker ps -a; systemctl status docker"
+                    if "docker" in d.lower() and "down" in d.lower()
+                    else "сверься по diag (load/RAM/docker)"))),
+}
+
+ROUTE_SKILLS = "research + labsearch + Археолог корней"
 
 # «Что это» простым языком — контекстная подсказка для каждой категории (для --full)
 CAT_HINT = {
@@ -562,11 +618,18 @@ def build_report(full=False):
         for p in sf:
             lines.append(f"  • {p}")
 
-    # слой реагирования (advise)
+    # слой реагирования (advise) — умный совет по провалу, иначе fallback на маршрут
     if fails:
         lines.append("🔧 СОВЕТ (без «го» не спавню):")
+        details_by_cid = {cid: details for cid, name, ok, summary, details in results}
         for cid, name, summary in fails:
-            lines.append(f"  → [{cid}] {name}: спавнить {ROUTE.get(cid,'?')} с набором [{ROUTE_SKILLS}]")
+            fn = ADVICE.get(cid)
+            if fn:
+                ctx = summary + "\n" + "\n".join(details_by_cid.get(cid, []))
+                advice = fn(False, summary, ctx)
+                lines.append(f"  → [{cid}] {name}: {advice}")
+            else:
+                lines.append(f"  → [{cid}] {name}: спавнить {ROUTE.get(cid,'?')} с набором [{ROUTE_SKILLS}]")
 
     if not full:
         q = get_random_quote()
