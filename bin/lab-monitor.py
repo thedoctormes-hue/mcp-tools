@@ -426,10 +426,13 @@ def cat_host():
     out.append(f"loadavg: {load}")
     fr = run("free -m | awk '/Mem:/ {print $3\"/\"$2\" MB\"}'", timeout=5)
     ram = fr.stdout.strip() if fr else "?"
-    out.append(f"RAM: {ram}")
-    dp = run("docker ps --format '{{.Names}}' | wc -l", timeout=8)
-    cont = dp.stdout.strip() if dp else "?"
-    out.append(f"docker containers: {cont}")
+    fp = run("free -m | awk '/Mem:/ {print $4}'", timeout=5)
+    free_ram = fp.stdout.strip() if fp else "?"
+    out.append(f"RAM: {ram} (свободно {free_ram} MB)")
+    dp = run("docker ps --format '{{.Names}}'", timeout=8)
+    conts = dp.stdout.strip().splitlines() if dp and dp.stdout.strip() else []
+    cont = str(len(conts))
+    out.append(f"контейнеры ({cont}): {', '.join(conts) if conts else 'нет'}")
     ncpu = run("nproc", timeout=5)
     cores = ncpu.stdout.strip() if ncpu and ncpu.stdout.strip().isdigit() else "?"
     # load(1мин): всплески до ~2×ядер — норма; устойчивое превышение — тревога
@@ -446,9 +449,12 @@ def cat_host():
         load_hint = "повышенная"
     else:
         load_hint = "ВЫСОКАЯ"
-    out.append(f"ядер CPU: {cores} (норма load <{cores}, всплески до {int(ncores*lh)} ок)")
+    pct = round(load1 / ncores * 100) if ncores else 0
+    out.append(f"ядер CPU: {cores} (нагрузка {load1} из {cores} = {pct}%, норма <100%)")
     ok = load1 < ncores*lh  # тревога только при load1 ≥ lh×ядер
-    return ok, f"load {load} (1мин {load1} — {load_hint}, норма <{cores}); RAM {ram}; docker {cont}", out
+    summary = (f"нагрузка CPU {load1} из {cores} ядер (~{pct}%, {load_hint}); "
+               f"память {ram} (свободно {free_ram} MB); контейнеры {cont} запущено")
+    return ok, summary, out
 
 
 def self_factcheck(results):
@@ -587,7 +593,7 @@ CATEGORIES = [
     (5, "Данные",        cat_data),
     (6, "Сеть",          cat_network),
     (7, "Проекты",       cat_projects),
-    (8, "Хост",          cat_host),
+    (8, "Сервер",       cat_host),
 ]
 
 

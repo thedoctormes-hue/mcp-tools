@@ -18,10 +18,10 @@ def test_self_factcheck_catches_lies():
         (2, "OpenClaw", True, "gateway работает, АВТО-перезапусков за 1h: 9 (systemd сам поднимал)\n⚠️ самопроверка: 1 старое безопасное замечание, новых нет", []),
         (3, "MCP", True, "2/3 работают", ["mcp-memory (порт 8087): DOWN"]),
         (5, "Данные", True, "PostgreSQL up; disk 96% (норма <85% — КРИТ)", []),
-        (8, "Хост", True, "load 0.93 (1мин 9.50 — ВЫСОКАЯ, норма <4)", []),
+        (8, "Сервер", True, "load 0.93 (1мин 9.50 — ВЫСОКАЯ, норма <4)", []),
     ]
     probs = M.self_factcheck(fake)
-    assert len(probs) == 5, probs  # 5 проблем из 5 записей (Агенты вне гарда: 0; OpenClaw 1; MCP 2; Данные 1; Хост 1)
+    assert len(probs) == 5, probs  # 5 проблем из 5 записей (Агенты вне гарда: 0; OpenClaw 1; MCP 2; Данные 1; Сервер 1)
 
 
 def test_self_factcheck_clean():
@@ -30,7 +30,7 @@ def test_self_factcheck_clean():
         (2, "OpenClaw", True, "gateway работает, перезапусков за 1h: 0\n⚠️ самопроверка: 1 старое безопасное замечание, новых нет", []),
         (3, "MCP", True, "3/3 работают", ["mcp-memory (порт 8087): работает"]),
         (5, "Данные", True, "PostgreSQL up; disk 81% (норма <85% — ок)", []),
-        (8, "Хост", True, "load 1.0 (1мин 1.0 — ок, норма <4)", []),
+        (8, "Сервер", True, "load 1.0 (1мин 1.0 — ок, норма <4)", []),
     ]
     assert M.self_factcheck(honest) == []
 
