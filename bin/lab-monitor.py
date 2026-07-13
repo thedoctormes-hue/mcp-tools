@@ -662,7 +662,16 @@ def build_report(full=False):
 
     for cid, name, ok, summary, details in results:
         dl.append("")
-        dl.append(f"{icon[ok]} {cid}. {name} — {summary}")
+        # OK-категория: только статус+имя (числа в деталях ниже — без дубля summary);
+        # упавшая: summary в заголовке (причина тревоги сразу видна).
+        if ok:
+            dl.append(f"{icon[ok]} {cid}. {name}")
+            # сохранить вторичные ⚠️-строки summary (напр. самопроверка) — их нет в деталях
+            for extra in summary.split("\n")[1:]:
+                if extra.strip():
+                    dl.append(extra)
+        else:
+            dl.append(f"{icon[ok]} {cid}. {name} — {summary}")
         if cid in CAT_HINT:
             dl.append(f"    💡 {CAT_HINT[cid]}")
         for d in details:

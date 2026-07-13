@@ -185,9 +185,26 @@ def test_all_categories_mocked():
         M.run = orig
 
 
+def test_full_no_summary_dup_for_ok():
+    """В --full OK-категория НЕ повторяет summary в заголовке (числа только в деталях).
+    Но вторичные ⚠️-строки summary (самопроверка) сохраняются."""
+    orig = M.run
+    M.run = _mock_run
+    try:
+        full = M.build_report(full=True)
+        # Сервер: заголовок "✅ 8. Сервер" без ' — нагрузка CPU...'
+        assert "✅ 8. Сервер" in full
+        assert "8. Сервер — нагрузка" not in full, "summary дублируется в full-заголовке"
+        # OpenClaw: вторичная ⚠️-строка самопроверки сохранена
+        assert "⚠️ самопроверка" in full
+    finally:
+        M.run = orig
+
+
 if __name__ == "__main__":
     test_self_factcheck_catches_lies()
     test_all_categories_mocked()
+    test_full_no_summary_dup_for_ok()
     test_cat_projects_summary_format()
     test_self_factcheck_clean()
     test_thresholds()
