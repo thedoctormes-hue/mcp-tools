@@ -50,6 +50,10 @@ IDLE_SHUTDOWN_SEC = int(os.environ.get("MCP_IDLE_SHUTDOWN_SEC", 0))
 METRICS_PORT = int(os.environ.get("MCP_METRICS_PORT", 0))
 # MCP_BACKEND: "faiss" (по умолчанию) | "lab_search" (единый бэкенд, опц. расширение).
 BACKEND = os.environ.get("MCP_BACKEND", "faiss")
+# Путь к lab_search.py (HYBRID-бэкенд). Делегирование без форка алгоритма Штрейкбрехера.
+LAB_SEARCH_PATH = os.environ.get("LAB_SEARCH_PATH", "/root/LabDoctorM/projects/lab-memory/scripts")
+# Side-car HTTP для /startup-brief (ретаргетинг startupContext на эндпоинт индекса). 0 = выкл.
+STARTUP_BRIEF_PORT = int(os.environ.get("STARTUP_BRIEF_PORT", 8093))
 
 mcp = FastMCP("memory", host=os.environ.get("MCP_HOST", "127.0.0.1"), port=PORT)
 
@@ -260,6 +264,41 @@ def search_keyword(query: str, top_k: int,
     return out
 
 
+# ── Unified backend delegation (Tier 0): lab_search HYBRID через subprocess ──
+def _lab_search_subprocess(query, top_k, agent="", project="", date="", metadata_only=False):
+    """Делегирование в lab_search.py (HYBRID: FAISS+FTS5/RRF). Без форка алгоритма.
+    Возвращает list[dict] или бросает Exception (caller решит — fallback на faiss)."""
+    import subprocess
+    cmd = ["python3", os.path.join(LAB_SEARCH_PATH, "lab_search.py"), "search", query,
+           "--limit", str(top_k)]
+    if agent:
+        cmd += ["--agent", agent]
+    if project:
+        cmd += ["--project", project]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if out.returncode != 0:
+        raise RuntimeError(f"lab_search rc={out.returncode}: {out.stderr[:200]}")
+    data = json.loads(out.stdout)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict) and "results" in data:
+        return data["results"]
+    raise RuntimeError("unexpected lab_search output shape")
+
+
+def _startup_brief(agent, limit, query=None):
+    """Курируемый блок для старта сессии агента. lab_search (HYBRID) | fallback faiss."""
+    q = query or f"{agent} identity role context responsibilities startup briefing"
+    if BACKEND == "lab_search":
+        try:
+            return _lab_search_subprocess(q, limit, agent=agent), "lab_search"
+        except Exception as e:
+            with _state_lock:
+                _state["last_error"] = f"startup_brief lab_search failed ({e}); faiss fallback"
+    res = search_faiss(q, limit, 0.0, agent=agent) or []
+    return res, "faiss"
+
+
 # ── Tools ────────────────────────────────────────────────────────────────
 @mcp.tool(name="lab_memory_search")
 def search(query: str, top_k: int = 5, threshold: float = DEFAULT_THRESHOLD,
@@ -290,6 +329,25 @@ def search(query: str, top_k: int = 5, threshold: float = DEFAULT_THRESHOLD,
             log_audit(query, time.time() - t0, True, len(cached.get("results", [])))
             return cached
         _state["cache_misses"] += 1
+    if BACKEND == "lab_search":
+        try:
+            delegated = _lab_search_subprocess(query, top_k, agent, project, date, metadata_only)
+            out = {
+                "query": query,
+                "count": len(delegated),
+                "results": delegated,
+                "cache_hit": False,
+                "degraded": False,
+                "backend": "lab_search",
+            }
+            with _state_lock:
+                _state["cache"][cache_key] = out
+                _state["latencies"].append(time.time() - t0)
+            log_audit(query, time.time() - t0, False, len(delegated))
+            return out
+        except Exception as e:
+            with _state_lock:
+                _state["last_error"] = f"lab_search backend failed ({e}); fallback to faiss"
     results = search_faiss(query, top_k, threshold, agent, project, source, date, metadata_only)
     degraded = False
     if results is None:
@@ -443,7 +501,7 @@ def _idle_shutdown_watchdog():
 
 import http.server
 import socketserver
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 
 def _metrics_text() -> str:
@@ -503,6 +561,52 @@ def _start_metrics_server():
     t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
 
 
+# ── Startup-brief side-car HTTP (Tier 1): ретаргетинг startupContext на индекс ──
+class _StartupBriefHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        p = urlparse(self.path).path
+        if p != "/startup-brief":
+            body = b'{"error":"not found"}'
+            self.send_response(404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        qs = parse_qs(urlparse(self.path).query)
+        agent = qs.get("agent", [""])[0]
+        try:
+            limit = max(1, min(int(qs.get("limit", ["8"])[0]), 20))
+        except ValueError:
+            limit = 8
+        q = qs.get("query", [None])[0]
+        try:
+            chunks, backend = _startup_brief(agent, limit, q)
+        except Exception:
+            chunks, backend = [], "error"
+        body = json.dumps(
+            {"agent": agent, "backend": backend, "count": len(chunks), "chunks": chunks},
+            ensure_ascii=False,
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+def _start_startup_brief_server():
+    if STARTUP_BRIEF_PORT <= 0:
+        return
+    socketserver.TCPServer.allow_reuse_address = True
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", STARTUP_BRIEF_PORT), _StartupBriefHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+
+
 # ── Main ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # Eager preload at startup: подхватываем то, что уже лежит на диске.
@@ -511,6 +615,7 @@ if __name__ == "__main__":
     load_index()
     # On-demand / observability (opt-in): side-car метрики + idle-shutdown.
     _start_metrics_server()
+    _start_startup_brief_server()
     threading.Thread(target=_idle_shutdown_watchdog, daemon=True).start()
     if TRANSPORT == "stdio":
         mcp.run(transport="stdio")
