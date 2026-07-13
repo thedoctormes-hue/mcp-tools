@@ -96,7 +96,7 @@ ADVICE = {
               else ("reindex уже идёт — НЕ запускай второй раз; дождись завершения"
                     if "reindex active" in d.lower()
                     else "проверь ONNX/embedding и lab_search vectors"))),
-    5: lambda ok, s, d: ("PG DOWN → systemctl status postgresql; sudo journalctl -u postgresql --since '-15m'"
+    5: lambda ok, s, d: ("PostgreSQL DOWN → systemctl status postgresql; sudo journalctl -u postgresql --since '-15m'"
         if "pg" in d.lower() and "down" in d.lower()
         else ("disk высокий → du -sh /var /tmp /root 2>/dev/null; найди и очисти (trash > rm), но сначала фактчек"
               if "disk" in d.lower() and ("85" in d or "95" in d or "крит" in d.lower() or "высок" in d.lower())
@@ -343,7 +343,7 @@ def cat_data():
     out.append(f"disk /: {disk}")
     ok = pg_up and sq_ok and pct < THRESHOLDS["disk_warn_pct"]
     disk_hint = "ок" if pct < THRESHOLDS["disk_warn_pct"] else ("тревога" if pct < THRESHOLDS["disk_crit_pct"] else "КРИТ")
-    return ok, f"PG {'up' if pg_up else 'DOWN'}; disk {disk} (норма <{THRESHOLDS['disk_warn_pct']}% — {disk_hint})", out
+    return ok, f"PostgreSQL {'up' if pg_up else 'DOWN'}; disk {disk} (норма <{THRESHOLDS['disk_warn_pct']}% — {disk_hint})", out
 
 
 def cat_network():
@@ -459,7 +459,7 @@ def self_factcheck(results):
             if m and int(m.group(1)) >= THRESHOLDS["disk_warn_pct"] and ok:
                 problems.append(f"{name}: ✅ но disk {m.group(1)}% (норма <{THRESHOLDS['disk_warn_pct']})")
             if ok and "DOWN" in summary:
-                problems.append(f"{name}: ✅ но PG DOWN")
+                problems.append(f"{name}: ✅ но PostgreSQL DOWN")
         elif cid == 6:
             if ok and ("DOWN" in det or "FAIL" in det or "DOWN" in summary or "FAIL" in summary):
                 problems.append(f"{name}: ✅ но DOWN/FAIL в данных")
@@ -502,7 +502,7 @@ def independent_probe():
     probe[4] = f"lab_search vectors: {vec}"
     df = run("df -h / | tail -1 | awk '{print $5}'", timeout=6)
     pg = run("docker ps --filter name=api-hub-db-1 --format '{{.Status}}'", timeout=8)
-    probe[5] = f"disk {df.stdout.strip() if df else '?'} | PG {'Up' if pg and 'Up' in pg.stdout else 'DOWN'}"
+    probe[5] = f"disk {df.stdout.strip() if df else '?'} | PostgreSQL {'Up' if pg and 'Up' in pg.stdout else 'DOWN'}"
     vpn = run("docker ps --filter name=amnezia-awg2 --format '{{.Status}}'", timeout=8)
     sx = port_ok(8889)
     ssl = run("echo | timeout 8 openssl s_client -servername shtab-ai.ru -connect shtab-ai.ru:443 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null", timeout=12)
