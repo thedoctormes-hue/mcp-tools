@@ -85,10 +85,12 @@ def test_r3_five_timers_allowed(gk):
         r = gk.register_timer("raven", "lab", f"act{i}", f"*/{i+1} * * * *", f"timer job {i}")
         assert r["status"] == "ALLOW", r
 
-def test_r3_sixth_timer_rejected(gk):
-    for i in range(5):
-        gk.register_timer("raven", "lab", f"act{i}", f"*/{i+1} * * * *", f"timer job {i}")
-    r = gk.register_timer("raven", "lab", "act6", "*/6 * * * *", "sixth timer job")
+def test_r3_over_quota_timer_rejected(gk):
+    max_t = 50
+    for i in range(max_t):
+        r = gk.register_timer("raven", "lab", f"act{i}", f"*/{i+1} * * * *", f"timer job {i}")
+        assert r["status"] == "ALLOW", r
+    r = gk.register_timer("raven", "lab", f"act{max_t}", f"*/{max_t+1} * * * *", "one too many")
     assert r["status"] == "REJECT"
 
 
@@ -132,14 +134,42 @@ def test_r5_cross_agent_port_rejected(gk):
     assert r["status"] == "REJECT"
     assert "занят" in r["error"].lower() or "заявлен" in r["error"].lower()
 
-def test_r5_duplicate_timer_rejected(gk):
+def test_r5_duplicate_timer_refreshes_same_agent(gk):
+    # Повторная регистрация того же таймера тем же агентом (restart) = refresh.
     gk.register_timer("raven", "lab", "backup", "0 2 * * *", "nightly backup")
     r = gk.register_timer("raven", "lab", "backup", "0 2 * * *", "nightly backup two")
+    assert r["status"] == "ALLOW", r
+    live = [l for l in gk.leases.values() if l.agent == "raven"
+            and l.timer_action == "backup" and l.timer_schedule == "0 2 * * *"]
+    assert len(live) == 1, "повтор должен обновлять lease, а не плодить"
+
+
+def test_r5_cross_agent_timer_rejected(gk):
+    # Другой агент на тот же action+schedule = реальный конфликт намерений -> REJECT.
+    gk.register_timer("raven", "lab", "backup", "0 2 * * *", "nightly backup")
+    r = gk.register_timer("owl", "lab", "backup", "0 2 * * *", "nightly backup two")
     assert r["status"] == "REJECT"
 
 def test_r5_unique_timer_allowed(gk):
     r = gk.register_timer("raven", "lab", "ping", "*/5 * * * *", "healthcheck ping")
     assert r["status"] == "ALLOW", r
+
+
+def test_r5_timer_unit_field_populated(gk):
+    # Уровень 1-Г: поле unit в lease заполняется из аргумента unit.
+    gk.register_timer("raven", "lab", "ping", "*/5 * * * *", "healthcheck", unit="myrmex-healthcheck.timer")
+    lease = [l for l in gk.leases.values() if l.agent == "raven"
+             and l.timer_action == "ping" and l.timer_schedule == "*/5 * * * *"]
+    assert lease, "lease не создан"
+    assert lease[0].unit == "myrmex-healthcheck.timer"
+
+
+def test_r5_port_unit_field_populated(gk):
+    # Уровень 1-Г: поле unit заполняется и для порта.
+    gk.register_port("raven", "lab", 8085, "metrics exporter", unit="myrmex.service")
+    lease = [l for l in gk.leases.values() if l.agent == "raven" and l.port == 8085]
+    assert lease, "lease не создан"
+    assert lease[0].unit == "myrmex.service"
 
 
 # --------------------------------------------------------------------------- #

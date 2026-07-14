@@ -95,7 +95,7 @@ def post(payload):
     return {}
 
 
-def register_port(agent, project, port, what_for, as_root=False, bypass_reason=None):
+def register_port(agent, project, port, what_for, as_root=False, bypass_reason=None, unit=None):
     try:
         post({"jsonrpc": "2.0", "id": 0, "method": "initialize",
               "params": {"protocolVersion": "2024-11-05", "capabilities": {},
@@ -106,7 +106,8 @@ def register_port(agent, project, port, what_for, as_root=False, bypass_reason=N
                              "arguments": {"agent": agent, "project_id": project,
                                            "port": port, "what_for": what_for,
                                            "run_as": "", "as_root": bool(as_root),
-                                           "bypass_reason": bypass_reason or ""}}})
+                                           "bypass_reason": bypass_reason or "",
+                                           "unit": unit or ""}}})
         txt = r.get("result", {}).get("content", [{}])[0].get("text", "")
         # gatekeeper отвечает полем 'status' (не 'decision')
         return json.loads(txt).get("status", "ERROR")
@@ -115,33 +116,69 @@ def register_port(agent, project, port, what_for, as_root=False, bypass_reason=N
         return "DEAD"
 
 
+def register_timer(agent, project, schedule, action, what_for, as_root=False, bypass_reason=None, unit=None):
+    try:
+        post({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                         "clientInfo": {"name": "gk-shim", "version": "1.0"}}})
+        post({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+        r = post({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                  "params": {"name": "register_timer",
+                             "arguments": {"agent": agent, "project_id": project,
+                                           "action": action, "schedule": schedule,
+                                           "what_for": what_for,
+                                           "run_as": "", "as_root": bool(as_root),
+                                           "bypass_reason": bypass_reason or "",
+                                           "unit": unit or ""}}})
+        txt = r.get("result", {}).get("content", [{}])[0].get("text", "")
+        return json.loads(txt).get("status", "ERROR")
+    except Exception:
+        return "DEAD"
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 3 or sys.argv[1] != "port":
+    if len(sys.argv) < 3 or sys.argv[1] not in ("port", "timer"):
         print("ERROR")
         sys.exit(0)
-    port = int(sys.argv[2])
-    what_for = sys.argv[3] if len(sys.argv) > 3 else "shim"
-    agent_arg = sys.argv[4] if len(sys.argv) > 4 else "auto"
-    project = sys.argv[5] if len(sys.argv) > 5 else ""
+
     as_root = "--as-root" in sys.argv
-    # bypass_reason из --bypass-reason <text>
     bypass_reason = None
+    unit = None
     if "--bypass-reason" in sys.argv:
         i = sys.argv.index("--bypass-reason")
         if i + 1 < len(sys.argv):
             bypass_reason = sys.argv[i + 1]
+    if "--unit" in sys.argv:
+        i = sys.argv.index("--unit")
+        if i + 1 < len(sys.argv):
+            unit = sys.argv[i + 1]
 
-    agent = resolve_agent() if (not agent_arg or agent_arg == "auto") else agent_arg
-    if not project:
-        project = agent
+    if sys.argv[1] == "port":
+        port = int(sys.argv[2])
+        what_for = sys.argv[3] if len(sys.argv) > 3 else "shim"
+        agent_arg = sys.argv[4] if len(sys.argv) > 4 else "auto"
+        project = sys.argv[5] if len(sys.argv) > 5 else ""
+        agent = resolve_agent() if (not agent_arg or agent_arg == "auto") else agent_arg
+        if not project:
+            project = agent
+        res = register_port(agent, project, port, what_for, as_root=as_root, bypass_reason=bypass_reason, unit=unit)
+    else:  # timer
+        schedule = sys.argv[2]
+        action = sys.argv[3] if len(sys.argv) > 3 else ""
+        what_for = sys.argv[4] if len(sys.argv) > 4 else "shim"
+        agent_arg = sys.argv[5] if len(sys.argv) > 5 else "auto"
+        project = sys.argv[6] if len(sys.argv) > 6 else ""
+        agent = resolve_agent() if (not agent_arg or agent_arg == "auto") else agent_arg
+        if not project:
+            project = agent
+        res = register_timer(agent, project, schedule, action, what_for, as_root=as_root, bypass_reason=bypass_reason, unit=unit)
 
-    res = register_port(agent, project, port, what_for, as_root=as_root, bypass_reason=bypass_reason)
     if res == "DEAD":
         contract = {
             "status": "dead",
             "heal": "systemctl restart mcp-gatekeeper",
             "mandatory_retry": True,
-            "message": "Gatekeeper мертв. Вылечи: systemctl restart mcp-gatekeeper, затем ОБЯЗАН повторить register_port."
+            "message": "Gatekeeper мертв. Вылечи: systemctl restart mcp-gatekeeper, затем ОБЯЗАН повторить."
         }
         print("GATEKEEPER_DEAD " + json.dumps(contract, ensure_ascii=False))
         sys.exit(2)

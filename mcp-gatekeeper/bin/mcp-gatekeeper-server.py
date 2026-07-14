@@ -342,9 +342,13 @@ class Gatekeeper:
                 )
         return True, ""
 
-    def check_dedup_timer(self, action: str, schedule: str) -> Tuple[bool, str]:
+    def check_dedup_timer(self, action: str, schedule: str, agent: str = "") -> Tuple[bool, str]:
+        # Зеркалит check_dedup_port: только перекрёстные претензии (другой агент
+        # заявляет тот же action+schedule) — реальный конфликт намерений. Повторная
+        # регистрация тем же агентом (restart таймера) = refresh, не отказ
+        # (ЗавЛаб 12.07 / Уровень 1-Г).
         for l in self.leases.values():
-            if l.timer_action == action and l.timer_schedule == schedule:
+            if l.timer_action == action and l.timer_schedule == schedule and l.agent != agent:
                 return False, (
                     f"таймер (action={action!r}, schedule={schedule!r}) уже активен "
                     f"у агента '{l.agent}' (request_id={l.request_id})"
@@ -472,7 +476,7 @@ class Gatekeeper:
             ok, reason = self.check_quota(agent, "timer")
             if not ok:
                 return False, reason
-            ok, reason = self.check_dedup_timer(action, schedule)
+            ok, reason = self.check_dedup_timer(action, schedule, agent)
             if not ok:
                 return False, reason
 
@@ -509,11 +513,12 @@ class Gatekeeper:
             last_heartbeat=now,
             lease_timeout=self.lease_timeout,
             bypass=bypass,
+            unit=req.get("unit"),
         )
 
-    def register_port(self, agent, project_id, port, what_for, run_as=None, as_root=False, bypass_reason=None) -> Dict[str, Any]:
+    def register_port(self, agent, project_id, port, what_for, run_as=None, as_root=False, bypass_reason=None, unit=None) -> Dict[str, Any]:
         req = dict(agent=agent, project_id=project_id, what_for=what_for, port=port,
-                   run_as=run_as, as_root=as_root, bypass_reason=bypass_reason)
+                   run_as=run_as, as_root=as_root, bypass_reason=bypass_reason, unit=unit)
         allow, reason = self.pdp(req)
         if not allow:
             self._audit("register_port", req, "REJECT", reason)
@@ -532,15 +537,20 @@ class Gatekeeper:
         self._audit("register_port", req, "ALLOW", reason, lease)
         return self._allow("register_port", lease)
 
-    def register_timer(self, agent, project_id, action, schedule, what_for, run_as=None, as_root=False, bypass_reason=None) -> Dict[str, Any]:
+    def register_timer(self, agent, project_id, action, schedule, what_for, run_as=None, as_root=False, bypass_reason=None, unit=None) -> Dict[str, Any]:
         req = dict(agent=agent, project_id=project_id, what_for=what_for,
                    timer=dict(action=action, schedule=schedule), run_as=run_as,
-                   as_root=as_root, bypass_reason=bypass_reason)
+                   as_root=as_root, bypass_reason=bypass_reason, unit=unit)
         allow, reason = self.pdp(req)
         if not allow:
             self._audit("register_timer", req, "REJECT", reason)
             return self._reject("register_timer", req, reason)
         with self.lock:
+            # Идемпотентность (Уровень 1-Г): повторная регистрация того же таймера
+            # этим агентом (restart таймера) обновляет lease, а не плодит новые.
+            for rid, l in list(self.leases.items()):
+                if l.agent == agent and l.timer_action == action and l.timer_schedule == schedule:
+                    del self.leases[rid]
             lease = self._mk_lease(req, "timer", None, dict(action=action, schedule=schedule),
                                    bypass="root" if as_root and self.allow_root_backdoor else None)
             self.leases[lease.request_id] = lease
@@ -548,16 +558,21 @@ class Gatekeeper:
         self._audit("register_timer", req, "ALLOW", reason, lease)
         return self._allow("register_timer", lease)
 
-    def register_service(self, agent, project_id, port, action, schedule, what_for, run_as=None, as_root=False, bypass_reason=None) -> Dict[str, Any]:
+    def register_service(self, agent, project_id, port, action, schedule, what_for, run_as=None, as_root=False, bypass_reason=None, unit=None) -> Dict[str, Any]:
         """Порт + таймер атомарно, один request_id. Если любая проверка падает — ничего не выдаём."""
         timer = dict(action=action, schedule=schedule)
         req = dict(agent=agent, project_id=project_id, what_for=what_for,
-                   port=port, timer=timer, run_as=run_as, as_root=as_root, bypass_reason=bypass_reason)
+                   port=port, timer=timer, run_as=run_as, as_root=as_root,
+                   bypass_reason=bypass_reason, unit=unit)
         allow, reason = self.pdp(req)
         if not allow:
             self._audit("register_service", req, "REJECT", reason)
             return self._reject("register_service", req, reason)
         with self.lock:
+            # Идемпотентность: refresh того же порта этим агентом.
+            for rid, l in list(self.leases.items()):
+                if l.agent == agent and l.port == int(port):
+                    del self.leases[rid]
             lease = self._mk_lease(req, "service", int(port), timer,
                                    bypass="root" if as_root and self.allow_root_backdoor else None)
             self.leases[lease.request_id] = lease
@@ -909,7 +924,7 @@ GK = Gatekeeper(
 # --------------------------------------------------------------------------- #
 @mcp.tool()
 def register_port(agent: str, project_id: str, port: int, what_for: str,
-                  run_as: str = None, as_root: bool = False, bypass_reason: str = None) -> Dict[str, Any]:
+                  run_as: str = None, as_root: bool = False, bypass_reason: str = None, unit: str = None) -> Dict[str, Any]:
     """Зарегистрировать ТОЛЬКО порт через привратник.
 
     PDP-цепочка: Identity -> Диапазон портов -> Квота -> Резерв ->
@@ -925,12 +940,12 @@ def register_port(agent: str, project_id: str, port: int, what_for: str,
         as_root: root backdoor — обойти PDP (аудируется).
         bypass_reason: обоснование обхода (для аудита).
     """
-    return GK.register_port(agent, project_id, port, what_for, run_as, as_root, bypass_reason)
+    return GK.register_port(agent, project_id, port, what_for, run_as, as_root, bypass_reason, unit)
 
 
 @mcp.tool()
 def register_timer(agent: str, project_id: str, action: str, schedule: str, what_for: str,
-                   run_as: str = None, as_root: bool = False, bypass_reason: str = None) -> Dict[str, Any]:
+                   run_as: str = None, as_root: bool = False, bypass_reason: str = None, unit: str = None) -> Dict[str, Any]:
     """Зарегистрировать ТОЛЬКО таймер через привратник.
 
     Args:
@@ -941,18 +956,18 @@ def register_timer(agent: str, project_id: str, action: str, schedule: str, what
         what_for: обоснование (justification, обязательно).
         run_as / as_root / bypass_reason: см. register_port.
     """
-    return GK.register_timer(agent, project_id, action, schedule, what_for, run_as, as_root, bypass_reason)
+    return GK.register_timer(agent, project_id, action, schedule, what_for, run_as, as_root, bypass_reason, unit)
 
 
 @mcp.tool()
 def register_service(agent: str, project_id: str, port: int, action: str, schedule: str,
                      what_for: str, run_as: str = None, as_root: bool = False,
-                     bypass_reason: str = None) -> Dict[str, Any]:
+                     bypass_reason: str = None, unit: str = None) -> Dict[str, Any]:
     """Зарегистрировать порт + таймер АТОМАРНО (один request_id).
 
     Если любая PDP-проверка для порта ИЛИ таймера падает — ничего не выдаётся.
     """
-    return GK.register_service(agent, project_id, port, action, schedule, what_for, run_as, as_root, bypass_reason)
+    return GK.register_service(agent, project_id, port, action, schedule, what_for, run_as, as_root, bypass_reason, unit)
 
 
 @mcp.tool()
@@ -1102,6 +1117,7 @@ def _cli() -> int:
         p.add_argument("--run-as", default=None)
         p.add_argument("--as-root", action="store_true")
         p.add_argument("--bypass-reason", default=None)
+        p.add_argument("--unit", default=None)
 
     p = sub.add_parser("register-port")
     _add_common(p); p.add_argument("--port", type=int, required=True)
@@ -1130,11 +1146,11 @@ def _cli() -> int:
         return 1
 
     if args.cmd == "register-port":
-        out = gk.register_port(args.agent, args.project, args.port, args.what_for, args.run_as, args.as_root, args.bypass_reason)
+        out = gk.register_port(args.agent, args.project, args.port, args.what_for, args.run_as, args.as_root, args.bypass_reason, args.unit)
     elif args.cmd == "register-timer":
-        out = gk.register_timer(args.agent, args.project, args.action, args.schedule, args.what_for, args.run_as, args.as_root, args.bypass_reason)
+        out = gk.register_timer(args.agent, args.project, args.action, args.schedule, args.what_for, args.run_as, args.as_root, args.bypass_reason, args.unit)
     elif args.cmd == "register-service":
-        out = gk.register_service(args.agent, args.project, args.port, args.action, args.schedule, args.what_for, args.run_as, args.as_root, args.bypass_reason)
+        out = gk.register_service(args.agent, args.project, args.port, args.action, args.schedule, args.what_for, args.run_as, args.as_root, args.bypass_reason, args.unit)
     elif args.cmd == "release":
         out = gk.release(args.request_id, args.by_agent)
     elif args.cmd == "heartbeat":

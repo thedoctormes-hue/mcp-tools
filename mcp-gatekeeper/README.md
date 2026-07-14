@@ -139,8 +139,12 @@ sudo systemctl status mcp-gatekeeper
 - `get_fact(history)` — чтение последнего сохранённого снимка (или истории).
 - Фоновый поток делает `capture_fact()` каждые `fact_capture_interval_sec`
   (политика, по умолчанию 300с) — гейткипер непрерывно помнит реальность.
-- Поле `unit` добавлено в Lease (подготовка к связке unit<->lease; заполнение —
-  при интеграции shim, Уровень 1-Г).
+- Поле `unit` в Lease заполняется shim при регистрации (Уровень 1-Г, DONE
+  2026-07-14): shim передаёт `--unit <имя юнита>` для портов (`.service`/`.socket`)
+  и таймеров (`.timer`), так что lease хранит привязку к конкретному systemd-юниту.
+  Таймеры теперь автоматически ловятся shim при `systemctl enable/start/restart
+  *.timer` (зеркалит порт-путь, идемпотентно: restart = refresh lease, не плодит
+  новые). Порт-детект также ловит `ListenStream=48080` (порт-только, без хоста).
 
 CLI: `python3 bin/mcp-gatekeeper-server.py fact` (read-only скан),
 `capture-fact` (сохранить), `get-fact` (прочитать), `reconcile` (сверка).
