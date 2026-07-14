@@ -1,8 +1,6 @@
 # mcp-gatekeeper — MCP-привратник портов/таймеров
 
-Единый MCP-сервер = привратник. Агент **не может** напрямую забиндить порт или
-поставить таймер — только через этот сервер. Все решения принимает
-детерминированный **PDP (policy-as-code), БЕЗ LLM в ядре**.
+Единый MCP-сервер = привратник. Агент **не должен** напрямую занимать порт/таймер — только через этот сервер. Принудительная медиация работает на слое systemd через shim (см. `shim/README.md`; устанавливается как `/usr/bin/systemctl` через `dpkg-divert`). **Без shim** (или до eBPF, Фаза 3) прямой `bind()` и `.timer`/cron обходят gatekeeper. Все решения принимает детерминированный **PDP (policy-as-code), БЕЗ LLM в ядре**.
 
 Контракт: [`docs/CONTRACT.md`](../mcp-gatekeeper/docs/CONTRACT.md).
 
@@ -42,17 +40,23 @@ mcp-gatekeeper/
 Least-privilege → Project-scoped lease → Root backdoor`
 
 - **Identity** — агент известен (см. `policy_v1.yaml`, `agents`).
-- **Диапазон портов** — Ворон 8080–8099, Муравей 8100–8119, Сова 8120–8139,
-  Кот 8140–8159, Мангуст 8160–8169, Бестия 8170–8179, Доминика 8180–8189,
-  Штрейкбрехер 8190–8199.
+- **Диапазон портов** — глобальный `[1024, 65535]` (per-agent пулов **НЕТ**;
+  ЗавЛаб 12.07: любой агент может брать любой порт по назначению).
+  Зоны назначений: API 8000–8099, вспомогательные 8100–8199, метрики
+  9000–9099 (см. `policies/policy_v1.yaml` и `docs/PORT_REGISTRY.md`).
 - **Квота** — ≤3 порта, ≤5 таймеров на агента.
-- **Резерв** — блок <1024, 5432, 8086, 8087, 9100, 9187.
+- **Резерв** — блок <1024 и зарезервированные порты из
+  `policies/policy_v1.yaml` → `reserve.blocked_ports` (**единый источник**;
+  см. также `docs/PORT_REGISTRY.md`).
 - **Дедуп** — таймер уникален по (action+schedule); порт не занят (с подсказкой
   свободного порта при отказе).
 - **Justification** — `what_for` обязателен; v1 = точный (exact) match дедупа
   оправданий. v2 (семантика, fail-open) — заглушка, готова к ONNX+FAISS.
-- **Least-privilege** — ресурс выдаётся «от ограниченного юзера» (`lease_user`,
-  не root); `run_as=root` запрещён.
+- **Least-privilege** — `lease_user` записывается в lease (метаданные).
+  Внимание: в лабе все сервисы бегут от root (non-root юзеров нет), поэтому
+  `run_as=root` **разрешён для известных агентов**; принудительного понижения
+  прав нет. `as_root=True` обходит ВСЕ PDP-проверки (кроме аудита `BYPASS=root`)
+  для агентов из `authorized_root_agents`.
 - **Project-scoped lease** — ресурс за `project_id` + агент-арендатор +
   heartbeat; handoff между агентами; таймаут heartbeat → авто-освобождение.
 - **Root backdoor** — `as_root=True` обходит проверки, но пишет `BYPASS=root`
@@ -109,6 +113,13 @@ sudo systemctl status mcp-gatekeeper
 - `Restart=on-failure` + `StartLimitBurst=3`: защита от crash-loop.
 - Config validation **fail-fast**: невалидная политика → быстрый выход.
 - Log rate-limit защищает диск.
+
+## Установка shim (обязательная медиация, Слой 1+2)
+
+Без shim gatekeeper — только advisory-реестр: прямой `bind()` и `.timer`/cron
+его обходят. Установка описана в `shim/README.md` (ключевое — `dpkg-divert`
+оригинального `systemctl` и копия wrapper на `/usr/bin/systemctl`). В этой
+инсталляции shim уже установлен и активен.
 
 ## Тесты
 
