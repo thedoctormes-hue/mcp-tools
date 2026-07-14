@@ -7,7 +7,6 @@
 import subprocess
 import tempfile
 import os
-import sys
 import pytest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

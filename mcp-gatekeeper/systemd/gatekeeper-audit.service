@@ -12,6 +12,10 @@ SuccessExitStatus=0
 Restart=no
 # нужен root для ss -p (видеть PID/процесс слушающего сокета)
 User=root
+# Telegram-алерты: gk-audit.sh вызывает этот нотификатор для каждого ALERT (Уровень Д-алерты, ADR-0056 follow-up)
+Environment=GK_NOTIFY=/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/audit/gk_notify.py
+# опциональный файл с GK_TG_BOT_TOKEN / GK_TG_CHAT_ID (переопределяет openclaw.json); - = игнорировать если нет
+EnvironmentFile=-/etc/gatekeeper-alert.env
 
 [Install]
 WantedBy=multi-user.target

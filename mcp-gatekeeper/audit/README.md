@@ -58,10 +58,12 @@ systemctl start gatekeeper-audit.service
 
 - **`port=N`** — подозрительный слушающий порт.
 - **`users:(("имя",pid,fd))`** — кто и какой процесс слушает (нужен root для `ss -p`).
-- **`[TELEGRAM]`** — пометка: внешний коллектор может `grep '[TELEGRAM]' /var/log/gk-audit.log`
-  и переслать в Telegram/Myrmex.
-- Опционально: если задать `GK_NOTIFY=/путь/к/нотификатору` (исполняемый файл,
-  принимает текст алерта аргументом), скрипт сам вызовет его.
+- **`[TELEGRAM]`** — пометка: строка отправлена в Telegram нотификатором
+  `audit/gk_notify.py` (подключён через `GK_NOTIFY` в юните). Саму строку можно
+  дохватить внешним коллектором: `grep '[TELEGRAM]' /var/log/gk-audit.log`.
+- Нотификатор вызывается самим `gk-audit.sh` (переменная `GK_NOTIFY`):
+  `"$GK_NOTIFY" "GK-AUDIT ALERT port=... detail"`. Подробности — в разделе
+  «Telegram-алерты» ниже.
 
 **Что делать при алерте:**
 1. `ss -tlnp | grep :N` — подтвердить и найти процесс/PID.
@@ -73,6 +75,42 @@ systemctl start gatekeeper-audit.service
    `gk-register` (получить lease) ИЛИ остановить несанкционированный процесс.
    Это сигнал обхода PDP (дыры 1/3/7/9) — зафиксировать инцидент.
 
+## Telegram-алерты (gk_notify.py)
+
+Готовый нотификатор `audit/gk_notify.py` шлёт каждый ALERT в Telegram ЗавЛабу.
+Подключён в `systemd/gatekeeper-audit.service` через `GK_NOTIFY=.../gk_notify.py`
+(юнит уже выставляет переменную). Работает так:
+
+- **Токен**: из `$GK_TG_BOT_TOKEN`, иначе из `/root/.openclaw/openclaw.json`
+  (`channels.telegram.accounts.<GK_TG_ACCOUNT, по умолчанию raven>.botToken`).
+  Юнит крутится от root, поэтому openclaw.json читается напрямую — отдельный
+  секрет-файл не нужен.
+- **Кому**: `$GK_TG_CHAT_ID`, по умолчанию `173681771` (ЗавЛаб).
+- **Дедуп**: одинаковый текст алерта не шлётся чаще раза в `GK_NOTIFY_TTL`
+  секунд (по умолчанию 3600). Защита от спама, если порт остаётся
+  несанкционированным несколько прогонов подряд.
+- **Безопасность**: нотификатор никогда не падает (exit 0) и не пишет токен
+  в логи; при ошибке отправки — stderr + повтор в следующем прогоне.
+- **Состояние дедупа**: `/var/lib/gatekeeper/notify-state.json` (создаётся
+  автоматически, root-владелец).
+
+Переопределить токен/chat вручную (без правки openclaw.json) можно через
+`EnvironmentFile=-/etc/gatekeeper-alert.env` (уже прописан в юните; `-` =
+игнорировать, если файла нет):
+
+```bash
+# /etc/gatekeeper-alert.env  (chmod 600, root:root)
+GK_TG_BOT_TOKEN=...
+GK_TG_CHAT_ID=173681771
+```
+
+Проверка доставки (один тестовый алерт):
+
+```bash
+/root/LabDoctorM/projects/mcp-tools/mcp-gatekeeper/audit/gk_notify.py \
+  "GK-NOTIFY test: Telegram alert delivery OK (raven)"
+```
+
 ## Настройка через env (для ручного запуска)
 
 | Переменная | Значение по умолчанию | Назначение |
@@ -80,7 +118,11 @@ systemctl start gatekeeper-audit.service
 | `GK_POLICY` | `policies/policy_v1.yaml` | путь к политике (ЕДИНЫЙ ИСТОЧНИК портов) |
 | `GK_LEASES` | `data/leases.json` | путь к leases |
 | `GK_AUDIT_LOG` | `/var/log/gk-audit.log` | файл инцидент-лога |
-| `GK_NOTIFY` | *(пусто)* | путь к нотификатору (опц.) |
+| `GK_NOTIFY` | `/root/.../audit/gk_notify.py` | нотификатор Telegram (выставлен юнитом) |
+| `GK_TG_BOT_TOKEN` | *(из openclaw.json)* | токен Telegram-бота (переопределяет fallback) |
+| `GK_TG_CHAT_ID` | `173681771` | кому слать алерты (ЗавЛаб) |
+| `GK_TG_ACCOUNT` | `raven` | аккаунт в openclaw.json для токена |
+| `GK_NOTIFY_TTL` | `3600` | секунды между повторами одинакового алерта |
 | `STRICT_PRIVILEGED` | `0` | `1` — не разрешать авто-порты <1024 (всё в реестре) |
 
 ## Связь с Фазой 5 (RBAC / polkit)
