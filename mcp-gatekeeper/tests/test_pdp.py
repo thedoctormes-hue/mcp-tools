@@ -73,10 +73,12 @@ def test_r3_three_ports_allowed(gk):
         r = gk.register_port("raven", "lab", port, f"svc number {i}")
         assert r["status"] == "ALLOW", r
 
-def test_r3_fourth_port_rejected(gk):
-    for i, port in enumerate((8080, 8081, 8082)):
-        gk.register_port("raven", "lab", port, f"svc number {i}")
-    r = gk.register_port("raven", "lab", 8083, "fourth service")
+def test_r3_over_quota_port_rejected(gk):
+    max_p = 30
+    for i in range(max_p):
+        r = gk.register_port("raven", "lab", 7000 + i, f"svc number {i}")
+        assert r["status"] == "ALLOW", r
+    r = gk.register_port("raven", "lab", 7000 + max_p, "one too many")
     assert r["status"] == "REJECT"
     assert "квота" in r["error"].lower() or "quota" in r["error"].lower()
 
