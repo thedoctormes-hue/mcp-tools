@@ -1,66 +1,53 @@
-# PORT_REGISTRY.md — Реестр разрешённых слушающих портов
+# PORT_REGISTRY.md — AUTO-GENERATED (Уровень Е ADR-0056)
 
-**Роль:** это явный allowlist известных инфраструктурных портов для `audit/gk-audit.sh`
-(Фаза 6 ADR-0055, Слой 2.5). Любой порт, слушающий на хосте, которого **нет** ни
-здесь, ни в `reserve.blocked_ports` политики, ни в активных `leases.json` — считается
-несанкционированным и генерит АЛЕРТ.
+> **НЕ РЕДАКТИРУЙ ВРУЧНУЮ.** Этот файл генерируется
+> `scripts/gen-port-registry.sh` из `policies/policy_v1.yaml`.
+> Единственный источник правды — policy (reserve.blocked_ports + listen_port
+> + block_privileged_below). Правки вноси в policy, затем перегенерируй.
 
-> Важно: порты из зоны агентских портов (например, 8080–8199) НАМЕРЕННО НЕ входят в этот
-> реестр. Агентский порт разрешён только если на него есть **активный lease**
-> (зарегистрирован через Gatekeeper с живым heartbeat). Это и есть ловушка для
-> hole 1/3/7/9.
+## Роль
 
-> Примечание: `audit/gk-audit.sh` ДОПОЛНИТЕЛЬНО автоматически разрешает
-> `reserve.blocked_ports` и `listen_port` из `policies/policy_v1.yaml`, а также
-> порты < `block_privileged_below` (по умолчанию <1024, системные). Этот файл —
-> кураторский слой поверх PDP-резерва для документирования реально ожидаемых
-> сервисов.
+Read-only вид зарезервированных/ожидаемых портов для аудита
+(`audit/gk-audit.sh`). Любой слушающий порт, которого НЕТ ни здесь,
+ни в активных lease (gatekeeper), ни среди системных (< `block_privileged_below`
+= 1024) — считается несанкционированным и генерит АЛЕРТ.
 
-## Формат
+Агентские порты (8080–8099 и т.п.) разрешены ТОЛЬКО при наличии
+активного lease в gatekeeper — они НЕ пре-разрешены здесь.
 
-Строки таблицы `| <порт> | <сервис> | <владелец> | <заметки> |` — парсер берёт
-первую цифровую ячейку как порт. Также допустимы строки вида `PORT 5432`.
+## Реестр (из policy)
 
-## Реестр
+| Port | Service | Notes |
+|------|---------|-------|
+| 80 | reserved/infra |  |
+| 443 | https (infra) |  |
+| 2222 | reserved/infra |  |
+| 3000 | grafana (infra) |  |
+| 5432 | PostgreSQL (infra) |  |
+| 6379 | Redis (infra) |  |
+| 8001 | reserved (infra) |  |
+| 8086 | mcp-apikeys (infra) |  |
+| 8087 | mcp-memory (infra) |  |
+| 8200 | reserved (infra) |  |
+| 8202 | reserved (infra) |  |
+| 8300 | reserved (infra) |  |
+| 8443 | reserved (infra) |  |
+| 8444 | reserved (infra) |  |
+| 8445 | reserved (infra) |  |
+| 8888 | mcp-gatekeeper (listen_port) | собственный порт PDP (listen_port) |
+| 8889 | reserved (infra) |  |
+| 8899 | reserved (infra) |  |
+| 9090 | Prometheus (infra) |  |
+| 9100 | node_exporter (infra) |  |
+| 9187 | postgres_exporter (infra) |  |
+| 9443 | reserved (infra) |  |
+| 10443 | reserved (infra) |  |
+| 18789 | reserved (infra) |  |
+| 36401 | reserved (infra) |  |
 
-| Port | Service | Owner | Notes |
-|------|---------|-------|-------|
-| 22 | ssh | host | привилегированный системный |
-| 53 | dns (systemd-resolved) | host | привилегированный системный |
-| 111 | rpcbind | host | привилегированный системный |
-| 123 | ntp | host | привилегированный системный |
-| 389 | ldap | infra | |
-| 443 | https (в reserve.blocked_ports) | infra | |
-| 3000 | grafana (в reserve) | infra | |
-| 5432 | PostgreSQL | infra | в reserve.blocked_ports |
-| 6379 | Redis | infra | в reserve.blocked_ports |
-| 8080 | зарезервировано (в reserve) | infra | зона агентских портов (8080–8099), но заблокировано PDP |
-| 8082 | зарезервировано (в reserve) | infra | |
-| 8084 | зарезервировано (в reserve) | infra | |
-| 8085 | зарезервировано (в reserve) | infra | |
-| 8086 | mcp-apikeys (в reserve) | infra | зона агентских портов (8080–8099), заблокировано PDP |
-| 8087 | mcp-memory (в reserve) | infra | зона агентских портов (8080–8099), заблокировано PDP |
-| 8090 | зарезервировано (в reserve) | infra | |
-| 8099 | зарезервировано (в reserve) | infra | |
-| 8200 | зарезервировано (в reserve) | infra | |
-| 8202 | зарезервировано (в reserve) | infra | |
-| 8300 | зарезервировано (в reserve) | infra | |
-| 8443 | зарезервировано (в reserve) | infra | |
-| 8444 | зарезервировано (в reserve) | infra | |
-| 8445 | зарезервировано (в reserve) | infra | |
-| 8888 | mcp-gatekeeper (listen_port) | gatekeeper | собственный порт PDP |
-| 8889 | зарезервировано (в reserve) | infra | |
-| 8899 | зарезервировано (в reserve) | infra | |
-| 9090 | Prometheus (в reserve) | infra | |
-| 9100 | node_exporter (в reserve) | infra | |
-| 9187 | postgres_exporter (в reserve) | infra | зона агентских портов (8190–8199), заблокировано |
-| 9443 | зарезервировано (в reserve) | infra | |
-| 10443 | зарезервировано (в reserve) | infra | |
-| 18789 | зарезервировано (в reserve) | infra | |
-| 36401 | зарезервировано (в reserve) | infra | |
+## Как обновить
 
-## Как добавить порт
-
-Если появляется легитимный сервис с новым портом — добавь строку в таблицу выше
-и закоммить (через `lab-commit.sh`). Не добавляй сюда порты из зоны агентских портов —
-для них источник разрешения это lease, а не реестр.
+1. Правь `reserve.blocked_ports` / `listen_port` / `block_privileged_below`
+   в `policies/policy_v1.yaml`.
+2. Перегенерируй: `bash scripts/gen-port-registry.sh`.
+3. Закоммить оба файла через `lab-commit.sh`.

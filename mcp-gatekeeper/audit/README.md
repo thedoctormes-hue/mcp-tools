@@ -10,16 +10,18 @@
 
 Порт считается **разрешённым**, если он есть в одном из:
 
-1. `docs/PORT_REGISTRY.md` — явный allowlist инфра-портов (этот реестр).
-2. `policies/policy_v1.yaml` → `reserve.blocked_ports` (резерв PDP, инфра).
-3. `policies/policy_v1.yaml` → `gatekeeper.listen_port` (собственный порт PDP).
-4. `data/leases.json` → **активный** lease (порт задан + `last_heartbeat + lease_timeout > now`).
-5. Дополнительно (по умолчанию): порты `< block_privileged_below` (обычно <1024)
+1. `policies/policy_v1.yaml` → `reserve.blocked_ports` (резерв PDP, инфра) — **ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ** (Уровень Е ADR-0056).
+2. `policies/policy_v1.yaml` → `gatekeeper.listen_port` (собственный порт PDP).
+3. `data/leases.json` → **активный** lease (порт задан + `last_heartbeat + lease_timeout > now`).
+4. Дополнительно (по умолчанию): порты `< block_privileged_below` (обычно <1024)
    трактуются как системные и разрешены, чтобы не алертить ssh/dns и т.п.
 
 Всё остальное слушающее → АЛЕРТ.
 
-> Намеренно: порты из пулов агентов (8080–8199 и др.) **не** в реестре. Агентский
+> `docs/PORT_REGISTRY.md` — УСТАРЕЛО как ручной allowlist. Это read-only вид,
+> генерируемый `scripts/gen-port-registry.sh` из policy. Правь policy, не md.
+
+> Намеренно: порты из пулов агентов (8080–8199 и др.) **не** пре-разрешены. Агентский
 > порт разрешён только при активном lease. Задеплоенный в обход Gatekeeper порт
 > (ручной процесс, проигнорированный REJECT) → АЛЕРТ.
 
@@ -63,8 +65,10 @@ systemctl start gatekeeper-audit.service
 
 **Что делать при алерте:**
 1. `ss -tlnp | grep :N` — подтвердить и найти процесс/PID.
-2. Если это легитимный новый инфра-сервис → добавить порт в `docs/PORT_REGISTRY.md`
-   и закоммитить. Алерт перестанет срабатывать.
+2. Если это легитимный новый инфра-сервис → добавить порт в
+   `policies/policy_v1.yaml` → `reserve.blocked_ports`, перегенерировать
+   `docs/PORT_REGISTRY.md` (`bash scripts/gen-port-registry.sh`) и закоммитить.
+   Алерт перестанет срабатывать.
 3. Если это агент задеплоил порт в обход Gatekeeper → зарегистрировать через
    `gk-register` (получить lease) ИЛИ остановить несанкционированный процесс.
    Это сигнал обхода PDP (дыры 1/3/7/9) — зафиксировать инцидент.
@@ -73,8 +77,7 @@ systemctl start gatekeeper-audit.service
 
 | Переменная | Значение по умолчанию | Назначение |
 |------------|-----------------------|-----------|
-| `GK_REGISTRY` | `docs/PORT_REGISTRY.md` | путь к реестру |
-| `GK_POLICY` | `policies/policy_v1.yaml` | путь к политике |
+| `GK_POLICY` | `policies/policy_v1.yaml` | путь к политике (ЕДИНЫЙ ИСТОЧНИК портов) |
 | `GK_LEASES` | `data/leases.json` | путь к leases |
 | `GK_AUDIT_LOG` | `/var/log/gk-audit.log` | файл инцидент-лога |
 | `GK_NOTIFY` | *(пусто)* | путь к нотификатору (опц.) |

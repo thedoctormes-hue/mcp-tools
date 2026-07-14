@@ -43,11 +43,12 @@ Least-privilege → Project-scoped lease → Root backdoor`
 - **Диапазон портов** — глобальный `[1024, 65535]` (per-agent пулов **НЕТ**;
   ЗавЛаб 12.07: любой агент может брать любой порт по назначению).
   Зоны назначений: API 8000–8099, вспомогательные 8100–8199, метрики
-  9000–9099 (см. `policies/policy_v1.yaml` и `docs/PORT_REGISTRY.md`).
-- **Квота** — ≤3 порта, ≤5 таймеров на агента.
+  9000–9099 (см. `policies/policy_v1.yaml`).
+- **Квота** — ≤30 портов, ≤50 таймеров на агента (поднято 14.07 во избежание
+  fail-closed блока массового рестарта; см. `policies/policy_v1.yaml` → `quotas`).
 - **Резерв** — блок <1024 и зарезервированные порты из
   `policies/policy_v1.yaml` → `reserve.blocked_ports` (**единый источник**;
-  см. также `docs/PORT_REGISTRY.md`).
+  `docs/PORT_REGISTRY.md` — read-only вид, генерируется `scripts/gen-port-registry.sh`).
 - **Дедуп** — таймер уникален по (action+schedule); порт не занят (с подсказкой
   свободного порта при отказе).
 - **Justification** — `what_for` обязателен; v1 = точный (exact) match дедупа

@@ -3,11 +3,15 @@
 # gk-audit.sh — Фаза 6 ADR-0055: Audit live listening ports (Слой 2.5)
 # -----------------------------------------------------------------------------
 # Регулярно (по systemd timer) снимает `ss -tlnp`, сверяет каждый слушающий
-# TCP-порт с источниками «разрешено»:
-#   1) реестр разрешённых портов  docs/PORT_REGISTRY.md
-#   2) reserve.blocked_ports      policies/policy_v1.yaml (инфра-резерв PDP)
-#   3) собственный порт gatekeeper (listen_port из policy)
+# TCP-порт с источниками «разрешено» (ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ — policies/policy_v1.yaml,
+# Уровень Е ADR-0056):
+#   1) reserve.blocked_ports      policies/policy_v1.yaml (инфра-резерв PDP, ожидаемые инфра-порты)
+#   2) собственный порт gatekeeper (listen_port из policy)
+#   3) порты < block_privileged_below — системные, разрешены по умолчанию
 #   4) активные lease             data/leases.json (heartbeat не просрочен)
+#
+# docs/PORT_REGISTRY.md — УСТАРЕЛО как ручной allowlist. Теперь это read-only вид,
+# генерируемый scripts/gen-port-registry.sh ИЗ policy. Правь policy_v1.yaml, не md.
 #
 # Любой слушающий порт ВНЕ разрешённых -> АЛЕРТ:
 #   - echo в stdout/stderr (видно в journal юнита)
@@ -21,7 +25,7 @@
 # через gatekeeper-audit.service.
 #
 # Переопределения через env:
-#   GK_REGISTRY / GK_POLICY / GK_LEASES / GK_AUDIT_LOG / GK_NOTIFY
+#   GK_POLICY / GK_LEASES / GK_AUDIT_LOG / GK_NOTIFY
 #   STRICT_PRIVILEGED=1 — порты < block_privileged_below НЕ считать авто-разрешёнными
 # =============================================================================
 set -uo pipefail
@@ -29,7 +33,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PORT_REGISTRY="${GK_REGISTRY:-$REPO_ROOT/docs/PORT_REGISTRY.md}"
 POLICY_FILE="${GK_POLICY:-$REPO_ROOT/policies/policy_v1.yaml}"
 LEASES_FILE="${GK_LEASES:-$REPO_ROOT/data/leases.json}"
 AUDIT_LOG="${GK_AUDIT_LOG:-/var/log/gk-audit.log}"
@@ -61,20 +64,8 @@ log_alert() {
 # --- собрать разрешённые порты в ассоциативный массив ---
 declare -A ALLOWED=()
 
-# 1) реестр PORT_REGISTRY.md (строки таблицы | 5432 | ... и строки PORT 5432)
-if [[ -f "$PORT_REGISTRY" ]]; then
-  while IFS= read -r raw; do
-    p=""
-    if [[ "$raw" =~ ^[[:space:]]*PORT[[:space:]]+([0-9]+) ]]; then
-      p="${BASH_REMATCH[1]}"
-    elif [[ "$raw" =~ \|[[:space:]]*([0-9]+)[[:space:]]*\| ]]; then
-      p="${BASH_REMATCH[1]}"
-    fi
-    [[ -n "$p" ]] && ALLOWED[$p]=1
-  done < "$PORT_REGISTRY"
-fi
-
-# 2)+3) policy: listen_port + reserve.blocked_ports + block_privileged_below
+# 1) policy: listen_port + reserve.blocked_ports + block_privileged_below
+#    (docs/PORT_REGISTRY.md более НЕ источник — см. Уровень Е ADR-0056)
 bpb=1024
 if [[ -f "$POLICY_FILE" ]]; then
   lp=$(grep -E '^[[:space:]]*listen_port:' "$POLICY_FILE" | grep -oE '[0-9]+' | head -1)
