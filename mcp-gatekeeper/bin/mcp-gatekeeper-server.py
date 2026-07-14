@@ -21,6 +21,8 @@ register-port-timer.sh и для тестов — вызывает ту же л�
 import argparse
 import fcntl
 import json
+import re
+import subprocess
 import os
 import socket
 import sys
@@ -623,6 +625,152 @@ class Gatekeeper:
                      and (project_id is None or l.project_id == project_id)]
         return {"status": "OK", "count": len(items), "leases": items}
 
+    # ---- Fact visibility (ADR-0056, Уровень 1-Б/В): read-only скан системы ----
+    # Гейткипер НЕ хранит Fact (реальное состояние системы) — только Intent
+    # (lease). Эти методы читают живую систему (systemd/ss) и возвращают Fact.
+    # НЕ мутируют state. Запись observed в state — отдельная задача (Уровень 1-А/Г).
+    def _run(self, cmd: List[str], timeout: float = 5.0):
+        """Запустить команду, вернуть (rc, stdout). rc=None при ошибке/таймауте."""
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return r.returncode, r.stdout
+        except Exception as exc:  # pragma: no cover - зависит от окружения
+            return None, f"ERR:{exc}"
+
+    def scan_units(self, kind: Optional[str] = None) -> Dict[str, Any]:
+        units: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        types = ("service", "socket", "timer") if kind is None else (kind,)
+        for t in types:
+            rc, out = self._run(["systemctl", "list-units", f"--type={t}",
+                                 "--all", "--no-legend"], timeout=10)
+            if rc is None:
+                errors.append(f"systemctl {t}: {out}")
+                continue
+            if rc != 0:
+                errors.append(f"systemctl list-units {t} rc={rc}")
+                continue
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                units.append({"unit": parts[0], "load": parts[1],
+                              "active": parts[2], "sub": parts[3], "type": t})
+        return {"units": units, "errors": errors}
+
+    def scan_ports(self) -> Dict[str, Any]:
+        ports: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        for proto, name in (("-tlnp", "tcp"), ("-ulnp", "udp")):
+            rc, out = self._run(["ss", proto], timeout=5)
+            if rc is None:
+                errors.append(f"ss {name}: {out}")
+                continue
+            if rc != 0:
+                errors.append(f"ss {proto} rc={rc}")
+                continue
+            for line in out.splitlines()[1:]:
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                local = parts[3]
+                m = re.search(r":(\d+)$", local)
+                if not m:
+                    continue
+                port = int(m.group(1))
+                proc = " ".join(parts[5:]) if len(parts) > 5 else ""
+                comm_m = re.search(r'users:\(\("([^"]+)"', proc)
+                comm = comm_m.group(1) if comm_m else ""
+                addr = local.rsplit(":", 1)[0]
+                ports.append({"proto": name, "port": port, "addr": addr, "comm": comm})
+        # дедуп по порту (tcp приоритетнее udp)
+        seen: Dict[int, Dict[str, Any]] = {}
+        for p in ports:
+            seen.setdefault(p["port"], p)
+        return {"ports": list(seen.values()), "errors": errors}
+
+    def scan_timers(self) -> Dict[str, Any]:
+        timers: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        rc, out = self._run(["systemctl", "list-timers", "--all",
+                             "--no-legend"], timeout=10)
+        if rc is None:
+            errors.append(f"systemctl list-timers: {out}")
+        elif rc == 0:
+            for line in out.splitlines():
+                parts = line.split()
+                if not parts:
+                    continue
+                unit = None
+                activates = None
+                for tok in parts:
+                    if tok.endswith(".timer"):
+                        unit = tok
+                    elif tok.endswith(".service"):
+                        activates = tok
+                if unit:
+                    timers.append({"unit": unit, "activates": activates})
+        else:
+            errors.append(f"systemctl list-timers rc={rc}")
+        return {"timers": timers, "errors": errors}
+
+    def scan_fact(self) -> Dict[str, Any]:
+        u = self.scan_units()
+        p = self.scan_ports()
+        t = self.scan_timers()
+        return {
+            "scanned_at": datetime.now(timezone.utc).isoformat(),
+            "units": u["units"], "units_errors": u["errors"],
+            "ports": p["ports"], "ports_errors": p["errors"],
+            "timers": t["timers"], "timers_errors": t["errors"],
+            "counts": {"units": len(u["units"]),
+                       "ports": len(p["ports"]),
+                       "timers": len(t["timers"])}
+        }
+
+    def list_units(self, kind: Optional[str] = None) -> Dict[str, Any]:
+        """Read-API: список systemd-юнитов (Fact, read-only)."""
+        return self.scan_units(kind)
+
+    def list_ports(self) -> Dict[str, Any]:
+        """Read-API: список слушающих портов (Fact, read-only)."""
+        return self.scan_ports()
+
+    def list_timers(self) -> Dict[str, Any]:
+        """Read-API: список systemd-таймеров (Fact, read-only)."""
+        return self.scan_timers()
+
+    def reconcile(self) -> Dict[str, Any]:
+        """ADR-0056 Уровень 1-В: сверка Fact (система) vs Intent (lease). Read-only."""
+        fact = self.scan_fact()
+        with self.lock:
+            leases = list(self.leases.values())
+        intent_ports = {l.port for l in leases if l.port is not None}
+        fact_ports = {p["port"] for p in fact["ports"]}
+        # ФАКТ есть, ИНТЕНТа нет -> возможный обход gatekeeper (прямой bind / нет lease)
+        unregistered = sorted(fact_ports - intent_ports)
+        # ИНТЕНТ есть, ФАКТа нет -> stale lease (сервис не поднялся / уже нет)
+        stale = sorted(intent_ports - fact_ports)
+        return {
+            "scanned_at": fact["scanned_at"],
+            "intent": {"leases": len(leases), "ports": sorted(intent_ports)},
+            "fact": {"ports_listening": sorted(fact_ports),
+                     "units": fact["counts"]["units"],
+                     "timers": fact["counts"]["timers"]},
+            "drift": {
+                "unregistered_listening_ports": unregistered,
+                "stale_leased_ports_not_listening": stale,
+            },
+            "caveats": [
+                "leases НЕ хранят имя systemd-юнита -> точное сопоставление "
+                "unit<->lease невозможно (ROOT 8); точный unit-drift появится "
+                "после добавления поля unit в Lease (ADR-0056 Уровень 1-А/Г).",
+                "timers сопоставляются только по наличию .timer-юнитов; "
+                "совпадение action<->unit не гарантировано.",
+            ],
+            "errors": fact["units_errors"] + fact["ports_errors"] + fact["timers_errors"],
+        }
+
     def reaper_tick(self) -> List[str]:
         """Освобождает lease, по которым не было heartbeat дольше lease_timeout."""
         now = time.time()
@@ -808,6 +956,44 @@ def check_health() -> Dict[str, Any]:
     }
 
 
+@mcp.tool()
+def list_units(kind: str = None) -> Dict[str, Any]:
+    """Список systemd-юнитов (Fact, read-only): service/socket/timer.
+
+    kind=None -> все три типа. Не мутирует state гейткипера.
+    """
+    return GK.scan_units(kind)
+
+
+@mcp.tool()
+def list_ports() -> Dict[str, Any]:
+    """Список слушающих портов (Fact, read-only) из ss -tlnp/-ulnp.
+
+    Возвращает proto/port/addr/comm. Не мутирует state.
+    """
+    return GK.scan_ports()
+
+
+@mcp.tool()
+def list_timers() -> Dict[str, Any]:
+    """Список systemd-таймеров (Fact, read-only) из systemctl list-timers.
+
+    Не мутирует state.
+    """
+    return GK.scan_timers()
+
+
+@mcp.tool()
+def reconcile() -> Dict[str, Any]:
+    """Сверка Fact (реальная система) vs Intent (lease): дрифт портов/юнитов/таймеров.
+
+    Read-only. Показывает порты, что слушают, но НЕ в lease
+    (unregistered_listening_ports — возможный обход gatekeeper), и lease-порты,
+    которые НЕ слушают (stale_leased_ports_not_listening — stale/waiting).
+    """
+    return GK.reconcile()
+
+
 # --------------------------------------------------------------------------- #
 # Фоновые потоки: reaper (lease timeout) — сервер НЕ шлёт heartbeat/watchdog.
 # «Жив ли сервер» доказывается ответом на реальный запрос агента (событийно).
@@ -866,6 +1052,8 @@ def _cli() -> int:
     p.add_argument("--to-agent", required=True); p.add_argument("--project", required=True); p.add_argument("--by-agent", default=None)
     p = sub.add_parser("list"); p.add_argument("--agent", default=None); p.add_argument("--project", default=None)
     sub.add_parser("health")
+    sub.add_parser("fact")
+    sub.add_parser("reconcile")
 
     args = ap.parse_args()
     policy = _load_policy_file(Path(args.policy), fail_fast=True)
@@ -889,6 +1077,10 @@ def _cli() -> int:
         out = gk.transfer(args.request_id, args.to_agent, args.project, args.by_agent)
     elif args.cmd == "list":
         out = gk.list_leases(args.agent, args.project)
+    elif args.cmd == "fact":
+        out = gk.scan_fact()
+    elif args.cmd == "reconcile":
+        out = gk.reconcile()
     else:
         out = gk.check_health()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -924,6 +1116,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in (
         "register-port", "register-timer", "register-service",
         "release", "heartbeat", "transfer", "list", "health",
+        "fact", "reconcile",
     ):
         sys.exit(_cli())
 

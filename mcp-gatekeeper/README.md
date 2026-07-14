@@ -121,6 +121,22 @@ sudo systemctl status mcp-gatekeeper
 оригинального `systemctl` и копия wrapper на `/usr/bin/systemctl`). В этой
 инсталляции shim уже установлен и активен.
 
+## Fact visibility (read-API, ADR-0056 Уровень 1)
+
+Гейткипер теперь умеет **читать реальное состояние системы** (Fact), а не только
+хранить намерения агентов (Intent/lease). Read-only эндпоинты (не мутируют state):
+
+- `list_units(kind)` — systemd-юниты (service/socket/timer) через `systemctl list-units`.
+- `list_ports()` — слушающие порты (TCP/UDP) через `ss -tlnp`/`-ulnp`.
+- `list_timers()` — systemd-таймеры через `systemctl list-timers`.
+- `reconcile()` — сверка Fact vs Intent: порты, что слушают, но **не** в lease
+  (`unregistered_listening_ports` — возможный обход gatekeeper), и lease-порты,
+  которые **не** слушают (`stale_leased_ports_not_listening` — stale/waiting).
+
+Запись observed-Fact в постоянный state гейткипера — отдельная задача
+(ADR-0056 Уровень 1-А/Г: persistence + поле `unit` в Lease). CLI (read-only):
+`python3 bin/mcp-gatekeeper-server.py fact` и `... reconcile`.
+
 ## Тесты
 
 ```bash
