@@ -133,9 +133,17 @@ sudo systemctl status mcp-gatekeeper
   (`unregistered_listening_ports` — возможный обход gatekeeper), и lease-порты,
   которые **не** слушают (`stale_leased_ports_not_listening` — stale/waiting).
 
-Запись observed-Fact в постоянный state гейткипера — отдельная задача
-(ADR-0056 Уровень 1-А/Г: persistence + поле `unit` в Lease). CLI (read-only):
-`python3 bin/mcp-gatekeeper-server.py fact` и `... reconcile`.
+Теперь гейткипер ещё и **хранит** увиденное (ADR-0056 Уровень 1-А/Г):
+- `capture_fact()` — снимок реального состояния (Fact) и запись в state
+  (`data/facts_latest.json` + история `facts_history.jsonl`).
+- `get_fact(history)` — чтение последнего сохранённого снимка (или истории).
+- Фоновый поток делает `capture_fact()` каждые `fact_capture_interval_sec`
+  (политика, по умолчанию 300с) — гейткипер непрерывно помнит реальность.
+- Поле `unit` добавлено в Lease (подготовка к связке unit<->lease; заполнение —
+  при интеграции shim, Уровень 1-Г).
+
+CLI: `python3 bin/mcp-gatekeeper-server.py fact` (read-only скан),
+`capture-fact` (сохранить), `get-fact` (прочитать), `reconcile` (сверка).
 
 ## Тесты
 

@@ -149,6 +149,7 @@ class Lease:
     last_heartbeat: float
     lease_timeout: float
     bypass: Optional[str] = None  # "root" или None
+    unit: Optional[str] = None    # имя systemd-юнита (заполнение — при интеграции shim, Уровень 1-Г)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -173,6 +174,7 @@ class Gatekeeper:
         self.justification_mode = str(gk.get("justification_mode", "v1_exact"))
         self.log_rate = int(gk.get("log_rate_limit_per_sec", 20))
         _rate_limiter.max = max(1, self.log_rate)
+        self.fact_capture_interval = float(gk.get("fact_capture_interval_sec", 300))
         self.agents = {a["id"]: a for a in policy.get("agents", [])}
         self.quotas = policy.get("quotas", {"max_ports": 3, "max_timers": 5})
         self.reserve = policy.get("reserve", {"block_privileged_below": 1024, "blocked_ports": []})
@@ -771,6 +773,46 @@ class Gatekeeper:
             "errors": fact["units_errors"] + fact["ports_errors"] + fact["timers_errors"],
         }
 
+    # ---- Fact persistence (ADR-0056, Уровень 1-А): гейткипер хранит Fact ----
+    # Не только намерения (lease), но и реальное состояние системы (снимки).
+    def _fact_path(self) -> Path:
+        return self.data_dir / "facts_latest.json"
+
+    def _fact_history_path(self) -> Path:
+        return self.data_dir / "facts_history.jsonl"
+
+    def capture_fact(self) -> Dict[str, Any]:
+        """Снять снимок Fact (реальная система) и сохранить в state гейткипера.
+
+        Делает гейткипер хранителем Fact (SSOT), а не только намерений (lease).
+        """
+        fact = self.scan_fact()
+        fact["captured_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            self.data_dir.mkdir(parents=True, exist_ok=True)
+            self._fact_path().write_text(json.dumps(fact, ensure_ascii=False), encoding="utf-8")
+            with open(self._fact_history_path(), "a", encoding="utf-8") as f:
+                f.write(json.dumps({"captured_at": fact["captured_at"],
+                                    "counts": fact["counts"]}, ensure_ascii=False) + "\n")
+        except Exception as exc:
+            log(f"WARN: fact capture failed: {exc}", logging.WARNING)
+            fact["error"] = str(exc)
+        return fact
+
+    def get_fact(self, history: bool = False) -> Dict[str, Any]:
+        """Прочитать последний сохранённый снимок Fact (history=True → история)."""
+        path = self._fact_history_path() if history else self._fact_path()
+        if not path.exists():
+            return {"status": "EMPTY", "path": str(path)}
+        try:
+            if history:
+                rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+                return {"status": "OK", "path": str(path), "history": rows}
+            return {"status": "OK", "path": str(path),
+                    "fact": json.loads(path.read_text(encoding="utf-8"))}
+        except Exception as exc:
+            return {"status": "ERROR", "error": str(exc)}
+
     def reaper_tick(self) -> List[str]:
         """Освобождает lease, по которым не было heartbeat дольше lease_timeout."""
         now = time.time()
@@ -994,6 +1036,18 @@ def reconcile() -> Dict[str, Any]:
     return GK.reconcile()
 
 
+@mcp.tool()
+def capture_fact() -> Dict[str, Any]:
+    """Снять снимок реального состояния системы (Fact) и сохранить в state гейткипера (SSOT)."""
+    return GK.capture_fact()
+
+
+@mcp.tool()
+def get_fact(history: bool = False) -> Dict[str, Any]:
+    """Прочитать последний сохранённый снимок Fact (history=True → история captures)."""
+    return GK.get_fact(history)
+
+
 # --------------------------------------------------------------------------- #
 # Фоновые потоки: reaper (lease timeout) — сервер НЕ шлёт heartbeat/watchdog.
 # «Жив ли сервер» доказывается ответом на реальный запрос агента (событийно).
@@ -1005,6 +1059,16 @@ def _reaper_loop() -> None:
         except Exception as exc:
             log(f"WARN: reaper error: {exc}", logging.WARNING)
         _STOP.wait(max(5.0, GK.lease_timeout / 10.0))
+
+
+def _fact_capture_loop() -> None:
+    # ADR-0056 Уровень 1-А: непрерывно запоминаем реальное состояние системы (SSOT).
+    while not _STOP.is_set():
+        try:
+            GK.capture_fact()
+        except Exception as exc:  # pragma: no cover - зависит от окружения
+            log(f"WARN: fact capture error: {exc}", logging.WARNING)
+        _STOP.wait(max(30.0, GK.fact_capture_interval))
 
 
 def _install_signal_handlers() -> None:
@@ -1054,6 +1118,8 @@ def _cli() -> int:
     sub.add_parser("health")
     sub.add_parser("fact")
     sub.add_parser("reconcile")
+    sub.add_parser("capture-fact")
+    sub.add_parser("get-fact")
 
     args = ap.parse_args()
     policy = _load_policy_file(Path(args.policy), fail_fast=True)
@@ -1081,6 +1147,10 @@ def _cli() -> int:
         out = gk.scan_fact()
     elif args.cmd == "reconcile":
         out = gk.reconcile()
+    elif args.cmd == "capture-fact":
+        out = gk.capture_fact()
+    elif args.cmd == "get-fact":
+        out = gk.get_fact()
     else:
         out = gk.check_health()
     print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -1116,7 +1186,7 @@ def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in (
         "register-port", "register-timer", "register-service",
         "release", "heartbeat", "transfer", "list", "health",
-        "fact", "reconcile",
+        "fact", "reconcile", "capture-fact", "get-fact",
     ):
         sys.exit(_cli())
 
@@ -1128,6 +1198,7 @@ def main() -> None:
 
     _install_signal_handlers()
     threading.Thread(target=_reaper_loop, name="reaper", daemon=True).start()
+    threading.Thread(target=_fact_capture_loop, name="fact-capture", daemon=True).start()
 
     transport = os.environ.get("MCP_TRANSPORT", "http").lower()
     log(f"mcp-gatekeeper {GATEKEEPER_VERSION} starting ({transport}), policy={DEFAULT_POLICY}", logging.INFO)
