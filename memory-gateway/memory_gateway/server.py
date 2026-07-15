@@ -1,0 +1,109 @@
+"""MCP-сервер memory-gateway — единое окно к семантической памяти лаборатории.
+
+Официальный MCP SDK (FastMCP). Инструменты:
+  - search_memory(query, top_k, workspace): гибридный поиск vector+lexical (RRF).
+  - get_document(doc_id, max_chars): полный сырой текст документа.
+  - gateway_health(): состояние слоёв (диагностика).
+
+Только сырые данные. Никаких /chat и LLM-прослоек.
+Транспорт: MG_TRANSPORT=stdio (по умолчанию) | streamable-http (сетевой деплой).
+"""
+import os
+import time
+from typing import Any, Dict, Optional
+
+from mcp.server.fastmcp import FastMCP
+
+from . import config, search
+from .logger import get_logger
+
+log = get_logger()
+
+mcp = FastMCP("memory-gateway", host=config.HOST, port=config.PORT)
+
+
+@mcp.tool(name="search_memory")
+def search_memory(query: str, top_k: int = config.DEFAULT_TOP_K,
+                  workspace: Optional[str] = None) -> Dict[str, Any]:
+    """Гибридный семантический поиск по памяти лаборатории (vector + lexical, RRF).
+
+    Args:
+        query: поисковый запрос на естественном языке или по ключевым словам.
+        top_k: число результатов (1..MAX_TOP_K).
+        workspace: опционально — ограничить векторный слой одним слагом workspace.
+
+    Returns:
+        Чистый JSON: {query, count, results[], degraded, layers}. Без LLM-синтеза.
+        Каждый результат: {doc_id, title, workspace, text, sources[],
+                           vector_score, lexical_score, rrf_score}.
+    """
+    t0 = time.time()
+    try:
+        out = search.hybrid_search(query, top_k, workspace)
+    except Exception as e:  # noqa: BLE001 — инструмент не должен ронять сервер
+        log.exception("search_memory failed")
+        return {"query": query, "count": 0, "results": [], "degraded": True,
+                "error": f"{type(e).__name__}: {e}"}
+    out["latency_ms"] = round((time.time() - t0) * 1000.0, 1)
+    log.info("search_memory q=%r top_k=%s count=%s degraded=%s %sms",
+             (query or "")[:80], top_k, out.get("count"), out.get("degraded"),
+             out["latency_ms"])
+    return out
+
+
+@mcp.tool(name="get_document")
+def get_document(doc_id: str, max_chars: int = 20000) -> Dict[str, Any]:
+    """Полный сырой текст документа по doc_id (из search_memory results[].doc_id).
+
+    Args:
+        doc_id: путь/идентификатор документа (напр. projects/lab-memory/CHANGELOG.md).
+        max_chars: максимум символов текста (защита от переполнения контекста).
+
+    Returns:
+        Чистый JSON: {doc_id, found, source, title, chars, truncated, content}.
+    """
+    try:
+        return search.get_document(doc_id, max_chars)
+    except Exception as e:  # noqa: BLE001
+        log.exception("get_document failed")
+        return {"doc_id": doc_id, "found": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@mcp.tool(name="gateway_health")
+def gateway_health() -> Dict[str, Any]:
+    """Диагностика шлюза: доступность токена, lexical.db, число workspace."""
+    health: Dict[str, Any] = {"ok": True}
+    # токен
+    try:
+        tok = search.load_token()
+        health["token"] = {"present": bool(tok), "len": len(tok)}
+    except Exception as e:  # noqa: BLE001
+        health["ok"] = False
+        health["token"] = {"present": False, "error": str(e)}
+    # lexical.db
+    health["lexical_db"] = {
+        "path": config.LEXICAL_DB,
+        "exists": os.path.exists(config.LEXICAL_DB),
+    }
+    # workspaces
+    try:
+        slugs = search.workspace_slugs()
+        health["workspaces"] = {"count": len(slugs)}
+    except Exception as e:  # noqa: BLE001
+        health["ok"] = False
+        health["workspaces"] = {"count": 0, "error": str(e)}
+    health["alm_base"] = config.ALM_BASE
+    health["version"] = __import__("memory_gateway").__version__
+    return health
+
+
+def main() -> None:
+    log.info("memory-gateway starting transport=%s", config.TRANSPORT)
+    if config.TRANSPORT == "stdio":
+        mcp.run(transport="stdio")
+    else:
+        mcp.run(transport="streamable-http")
+
+
+if __name__ == "__main__":
+    main()

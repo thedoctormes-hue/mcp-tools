@@ -1,0 +1,19 @@
+[project]
+name = "memory-gateway"
+version = "0.1.0"
+description = "MCP Semantic Memory Gateway for LabDoctorM (hybrid vector + FTS5 retrieval)"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.20",
+    "requests>=2.28",
+]
+
+[project.scripts]
+memory-gateway = "memory_gateway.server:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools]
+packages = ["memory_gateway"]

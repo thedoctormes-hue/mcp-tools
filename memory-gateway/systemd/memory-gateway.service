@@ -1,0 +1,22 @@
+[Unit]
+Description=memory-gateway MCP (Semantic Memory Gateway, hybrid vector+FTS5)
+After=network.target docker.service
+Wants=network.target
+
+[Service]
+Type=simple
+# Сетевой деплой (streamable-http). Для stdio-режима сервер запускается
+# субпроцессом из конфига агента, а не как systemd-юнит.
+Environment=MG_TRANSPORT=streamable-http
+Environment=MG_HOST=127.0.0.1
+Environment=MG_PORT=8091
+ExecStart=/usr/bin/python3 /root/LabDoctorM/projects/mcp-tools/memory-gateway/run.py
+Restart=on-failure
+RestartSec=5
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
