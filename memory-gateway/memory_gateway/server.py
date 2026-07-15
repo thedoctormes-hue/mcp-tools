@@ -98,6 +98,26 @@ def gateway_health() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         health["ok"] = False
         health["workspaces"] = {"count": 0, "error": str(e)}
+    # vector layer — live probe (AnythingLLM /api/v1/system/vector-count)
+    try:
+        import requests as _requests
+        tok = search.load_token()
+        vr = _requests.get(
+            f"{config.ALM_BASE}/system/vector-count",
+            headers={"Authorization": f"Bearer {tok}"},
+            timeout=config.SEARCH_TIMEOUT,
+        )
+        if vr.ok:
+            health["vector_layer"] = {
+                "reachable": True,
+                "vector_count": vr.json().get("vectorCount"),
+            }
+        else:
+            health["ok"] = False
+            health["vector_layer"] = {"reachable": False, "status": vr.status_code}
+    except Exception as e:  # noqa: BLE001
+        health["ok"] = False
+        health["vector_layer"] = {"reachable": False, "error": str(e)}
     health["alm_base"] = config.ALM_BASE
     health["version"] = __import__("memory_gateway").__version__
     return health

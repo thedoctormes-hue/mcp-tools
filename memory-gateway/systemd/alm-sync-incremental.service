@@ -1,0 +1,13 @@
+[Unit]
+Description=AnythingLLM semantic memory incremental sync + lexical rebuild
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/root/LabDoctorM/.ops/shared/anythingllm-sync/run-sync.sh incremental
+User=root
+Nice=10
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal

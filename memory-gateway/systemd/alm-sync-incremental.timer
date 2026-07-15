@@ -1,0 +1,11 @@
+[Unit]
+Description=AnythingLLM incremental sync every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=false
+Unit=alm-sync-incremental.service
+
+[Install]
+WantedBy=timers.target

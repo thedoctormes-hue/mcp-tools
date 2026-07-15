@@ -1,0 +1,11 @@
+[Unit]
+Description=AnythingLLM full reindex daily at 05:00
+
+[Timer]
+OnCalendar=*-*-* 05:00:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=alm-sync-rebuild.service
+
+[Install]
+WantedBy=timers.target
