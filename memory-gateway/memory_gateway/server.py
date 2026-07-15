@@ -120,6 +120,30 @@ def gateway_health() -> Dict[str, Any]:
         health["vector_layer"] = {"reachable": False, "error": str(e)}
     health["alm_base"] = config.ALM_BASE
     health["version"] = __import__("memory_gateway").__version__
+
+    # ── человекочитаемый итог (для алертов/крона) ───────────────────────
+    problems: list[str] = []
+    if not health.get("token", {}).get("present"):
+        problems.append("нет Bearer-токена AnythingLLM")
+    if not health.get("lexical_db", {}).get("exists"):
+        problems.append("лексический индекс (lexical.db) отсутствует")
+    vl = health.get("vector_layer", {})
+    if not vl.get("reachable"):
+        problems.append("векторный слой недоступен")
+    ws = health.get("workspaces", {})
+    if "error" in ws:
+        problems.append("ошибка перечисления workspace")
+    if problems:
+        health["message"] = (
+            "⚠️ Деградация семантической памяти: " + ", ".join(problems) + "."
+        )
+    else:
+        health["message"] = (
+            f"✅ Семантическая память работает штатно: "
+            f"{ws.get('count')} пространств знаний, "
+            f"{vl.get('vector_count')} векторов в индексе, "
+            f"лексический слой подключён. Шлюз v{health['version']}."
+        )
     return health
 
 
