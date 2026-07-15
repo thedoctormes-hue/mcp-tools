@@ -70,6 +70,7 @@ def temp_lexical(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     monkeypatch.setattr(config, "LEXICAL_DB", str(db))
+    monkeypatch.setattr(config, "LEXICAL_MIN_SCORE", 0.0)  # фикстуры BM25 < 1.0
     return str(db)
 
 
@@ -101,6 +102,61 @@ def test_get_document_by_basename(temp_lexical):
 def test_get_document_empty():
     doc = search.get_document("")
     assert doc["found"] is False
+
+
+def test_clean_text_strips_metadata_and_prefix():
+    raw = (
+        'passage: <document_metadata>\n'
+        'sourceDocument: foo.md\n'
+        'published: 7/15/2026\n'
+        '</document_metadata>\n\n'
+        '# Заголовок\n\nТело документа.'
+    )
+    out = search._clean_text(raw)
+    assert "<document_metadata>" not in out
+    assert "passage:" not in out
+    assert out.strip().startswith("# Заголовок")
+
+
+def test_clean_text_strips_fts_ellipsis():
+    raw = "…краткий фрагмент … ещё текст"
+    out = search._clean_text(raw)
+    assert "…" not in out          # FTS5 snippet-разделитель убран
+    assert "краткий фрагмент" in out
+    assert "ещё текст" in out
+
+
+def test_expand_result_grows_window(temp_lexical):
+    # многоабзачный документ; result.text — только первый абзац (чанк)
+    content = (
+        "Параграф один про дедлок и ThreadPoolExecutor.\n\n"
+        "Параграф два про таймаут и backoff.\n\n"
+        "Параграф три про ретрай и эмбеддинг."
+    )
+    conn = sqlite3.connect(temp_lexical)
+    conn.execute(
+        "INSERT INTO docs_fts (content, path, title) VALUES (?,?,?)",
+        (content, "projects/x/expand.md", "expand"),
+    )
+    conn.commit()
+    conn.close()
+    res = {
+        "doc_id": "projects/x/expand.md",
+        "text": "Параграф один про дедлок и ThreadPoolExecutor.",
+        "vector_score": 0.9,
+    }
+    search._expand_result(res)
+    assert res.get("context_expanded") is True
+    # окно выросло: попали соседние абзацы
+    assert "Параграф два" in res["text"]
+    assert "Параграф три" in res["text"]
+    assert res["expanded_chars"] > res["original_chars"]
+
+
+def test_expand_result_unknown_doc_stays_false(temp_lexical):
+    res = {"doc_id": "projects/x/missing.md", "text": "нет такого документа", "vector_score": 0.9}
+    search._expand_result(res)
+    assert res.get("context_expanded") is False
 
 
 # ── Гибрид с моком векторного слоя (сеть не трогаем) ─────────────────────

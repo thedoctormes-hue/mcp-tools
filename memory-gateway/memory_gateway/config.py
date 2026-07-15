@@ -34,13 +34,28 @@ SEARCH_TIMEOUT = float(os.environ.get("MG_SEARCH_TIMEOUT", "30"))
 # ── Поиск ──────────────────────────────────────────────────────────────
 DEFAULT_TOP_K = int(os.environ.get("MG_DEFAULT_TOP_K", "5"))
 MAX_TOP_K = int(os.environ.get("MG_MAX_TOP_K", "25"))
-VECTOR_SCORE_THRESHOLD = float(os.environ.get("MG_VECTOR_SCORE_THRESHOLD", "0.15"))
+# Порог отсечения векторного слоя. Распределение реальных скоров бимодально:
+# ~1.0 (точное совпадение) либо кластер ~0.15 (слабый, но релевантный хвост).
+# 0.13 — чуть ниже хвоста, чтобы не срезать легитимные 0.15, но отсекать мусор.
+VECTOR_SCORE_THRESHOLD = float(os.environ.get("MG_VECTOR_SCORE_THRESHOLD", "0.13"))
+# Лёгкий пол для лексического слоя (BM25, выше = лучше). Отсекает шум < 1.0.
+LEXICAL_MIN_SCORE = float(os.environ.get("MG_LEXICAL_MIN_SCORE", "1.0"))
 RRF_K = int(os.environ.get("MG_RRF_K", "60"))
 QUERY_MAX_LEN = int(os.environ.get("MG_QUERY_MAX_LEN", "1000"))
 # Сколько кандидатов тянуть из каждого слоя перед слиянием (recall > precision).
 CANDIDATE_MULT = int(os.environ.get("MG_CANDIDATE_MULT", "3"))
 # Ограничение параллельных vector-запросов по workspace.
 VECTOR_MAX_WORKERS = int(os.environ.get("MG_VECTOR_MAX_WORKERS", "6"))
+
+# ── Context Assembly (умная склейка контекста) ────────────────────────
+# Если найден релевантный пассаж, шлюз расширяет его до связного блока:
+# подтягивает соседние абзацы того же документа (через полный content из
+# lexical.db / get_document), чтобы агент получал логически завершённый
+# текст, а не изолированный чанк, оборванный на полуслове.
+EXPAND_CONTEXT_DEFAULT = bool(int(os.environ.get("MG_EXPAND_CONTEXT_DEFAULT", "1")))
+EXPAND_PARAGRAPHS = int(os.environ.get("MG_EXPAND_PARAGRAPHS", "1"))  # соседей до/после
+EXPAND_MAX_CHARS = int(os.environ.get("MG_EXPAND_MAX_CHARS", "4000"))  # жёсткий потолок
+CONTEXT_ANCHOR_MIN = int(os.environ.get("MG_CONTEXT_ANCHOR_MIN", "30"))  # мин. длина якоря
 
 # ── Логи ───────────────────────────────────────────────────────────────
 LOG_DIR = os.environ.get(

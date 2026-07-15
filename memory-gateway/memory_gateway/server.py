@@ -24,22 +24,28 @@ mcp = FastMCP("memory-gateway", host=config.HOST, port=config.PORT)
 
 @mcp.tool(name="search_memory")
 def search_memory(query: str, top_k: int = config.DEFAULT_TOP_K,
-                  workspace: Optional[str] = None) -> Dict[str, Any]:
+                  workspace: Optional[str] = None,
+                  expand_context: bool = config.EXPAND_CONTEXT_DEFAULT) -> Dict[str, Any]:
     """Гибридный семантический поиск по памяти лаборатории (vector + lexical, RRF).
 
     Args:
         query: поисковый запрос на естественном языке или по ключевым словам.
         top_k: число результатов (1..MAX_TOP_K).
         workspace: опционально — ограничить векторный слой одним слагом workspace.
+        expand_context: если True (по умолчанию), каждый найденный пассаж
+            расширяется до связного блока — подтягиваются соседние абзацы того
+            же документа (Context Assembly), чтобы не отдавать изолированный
+            чанк, оборванный на полуслове.
 
     Returns:
         Чистый JSON: {query, count, results[], degraded, layers}. Без LLM-синтеза.
         Каждый результат: {doc_id, title, workspace, text, sources[],
-                           vector_score, lexical_score, rrf_score}.
+                           vector_score, lexical_score, rrf_score,
+                           context_expanded, expanded_chars, original_chars}.
     """
     t0 = time.time()
     try:
-        out = search.hybrid_search(query, top_k, workspace)
+        out = search.hybrid_search(query, top_k, workspace, expand_context)
     except Exception as e:  # noqa: BLE001 — инструмент не должен ронять сервер
         log.exception("search_memory failed")
         return {"query": query, "count": 0, "results": [], "degraded": True,

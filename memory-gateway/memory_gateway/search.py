@@ -18,6 +18,28 @@ from .logger import get_logger
 
 log = get_logger()
 
+# Маркеры подсветки FTS5-сниппета (〈b〉…〈/b〉). Убираем при извлечении якоря.
+SNIP_OPEN = "\u27e8b\u27e9"
+SNIP_CLOSE = "\u27e8/b\u27e9"
+
+# AnythingLLM (utils/TextSplitter/index.js:145) заворачивает каждый чанк в
+# <document_metadata>...</document_metadata> и добавляет e5-префикс
+# passage:/query: при эмбеддинге. Это серверная обёртка — во входе sync.py
+# её нет, поэтому вырезаем на стороне выдачи шлюза, чтобы агент получал
+# чистый текст без служебного XML-подобного мусора.
+_DOC_META_RE = re.compile(r"<document_metadata>.*?</document_metadata>", re.DOTALL | re.IGNORECASE)
+_CHUNK_PREFIX_RE = re.compile(r"^\s*(passage|query|search_document|search_query)\s*:\s*", re.IGNORECASE)
+
+
+def _clean_text(text: str) -> str:
+    """Снимает серверные обёртки AnythingLLM: metadata-блок + e5-префикс."""
+    if not text:
+        return text
+    t = _DOC_META_RE.sub("", text)
+    t = _CHUNK_PREFIX_RE.sub("", t)
+    t = t.replace("\u2026", " ")  # FTS5 snippet-разделитель
+    return re.sub(r"[ \t]+\n", "\n", t).strip()
+
 # ── Секрет: кэшируем токен в памяти, читаем один раз ────────────────────
 _token_cache: Optional[str] = None
 _token_lock = threading.Lock()
@@ -103,7 +125,7 @@ def _vector_search_one(slug: str, query: str, top_k: int, threshold: float) -> L
                 "workspace": slug,
                 "title": title,
                 "doc_id": _doc_id_from_meta(meta, title),
-                "text": (res.get("text") or "")[:2000],
+                "text": _clean_text((res.get("text") or "")[:2000]),
                 "vector_score": float(res.get("score", 0.0)),
             })
         return out
@@ -165,7 +187,7 @@ def lexical_search(query: str, top_k: int) -> List[Dict[str, Any]]:
         try:
             sql = (
                 "SELECT path, title, bm25(docs_fts) AS rank, "
-                "snippet(docs_fts, 0, '\u27e8b\u27e9', '\u27e8/b\u27e9', '\u2026', 12) "
+                f"snippet(docs_fts, 0, '{SNIP_OPEN}', '{SNIP_CLOSE}', '\u2026', 12) "
                 "FROM docs_fts WHERE docs_fts MATCH ? ORDER BY rank LIMIT ?"
             )
             rows = conn.execute(sql, (match, top_k)).fetchall()
@@ -176,13 +198,17 @@ def lexical_search(query: str, top_k: int) -> List[Dict[str, Any]]:
         return []
     out = []
     for path, title, rank, snip in rows:
+        score = round(-float(rank), 4)
+        if score < config.LEXICAL_MIN_SCORE:
+            continue
+        clean = (snip or "").replace(SNIP_OPEN, "").replace(SNIP_CLOSE, "").strip()
         out.append({
             "source": "lexical",
             "workspace": None,
             "title": title,
             "doc_id": path,               # rel path — каноничный id для get_document
-            "text": (snip or "").strip(),
-            "lexical_score": round(-float(rank), 4),  # bm25 negative -> higher=better
+            "text": clean,
+            "lexical_score": score,       # bm25 negative -> higher=better
         })
     return out
 
@@ -243,7 +269,8 @@ def rrf_merge(vector_hits: List[Dict[str, Any]],
 
 # ── Публичный гибридный поиск ───────────────────────────────────────────
 def hybrid_search(query: str, top_k: int,
-                  workspace: Optional[str] = None) -> Dict[str, Any]:
+                  workspace: Optional[str] = None,
+                  expand_context: bool = config.EXPAND_CONTEXT_DEFAULT) -> Dict[str, Any]:
     """Гибрид: vector + lexical ПАРАЛЛЕЛЬНО, слияние RRF. Возвращает чистый JSON.
 
     degraded=True, если один из слоёв недоступен (второй всё равно вернёт данные).
@@ -275,6 +302,9 @@ def hybrid_search(query: str, top_k: int,
             log.error("lexical layer failed: %s", e)
 
     results = rrf_merge(vector_hits, lexical_hits, top_k)
+    if expand_context:
+        for r in results:
+            _expand_result(r)
     return {
         "query": query,
         "count": len(results),
@@ -354,3 +384,185 @@ def get_document(doc_id: str, max_chars: int = 20000) -> Dict[str, Any]:
         log.warning("get_document api fallback failed: %s", e)
 
     return {"doc_id": doc_id, "found": False, "error": "document not found"}
+
+
+# ── Context Assembly: расширение пассажа до связного блока ──────────────
+def _strip_anchor(text: str) -> str:
+    """Убирает FTS5-маркеры и схлопывает пробелы для надёжного поиска якоря."""
+    return re.sub(r"\s+", " ", (text or "").replace(SNIP_OPEN, "").replace(SNIP_CLOSE, "").replace("\u2026", " ")).strip()
+
+
+def _norm_map(text: str) -> tuple:
+    """Нормализует текст (lower + удаление кавычек + схлопывание whitespace в
+    один пробел) для поиска якоря и возвращает (norm_text, offsets), где
+    offsets[i] — позиция i-го символа norm_text в ИСХОДНОМ text. Позволяет
+    искать seed без кавычек/переводов строк, но получить корректную позицию
+    в оригинале для последующего разбиения на абзацы.
+    """
+    norm_chars: List[str] = []
+    offsets: List[int] = []
+    prev_ws = False
+    for i, ch in enumerate(text):
+        if ch in '"“”':
+            continue
+        if ch.isspace():
+            if not prev_ws:
+                norm_chars.append(" ")
+                offsets.append(i)
+                prev_ws = True
+            continue
+        norm_chars.append(ch.lower())
+        offsets.append(i)
+        prev_ws = False
+    return "".join(norm_chars), offsets
+
+
+def _lexical_fts_phrase(phrase: str) -> List[tuple]:
+    """[(path, content)] по точной фразе FTS5 — точное попадание в нужный документ."""
+    if not os.path.exists(config.LEXICAL_DB) or len(phrase) < 8:
+        return []
+    try:
+        conn = _lexical_connect()
+        try:
+            rows = conn.execute(
+                "SELECT path, content FROM docs_fts WHERE docs_fts MATCH ? LIMIT 5",
+                (f'"{phrase}"',),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [(p, c or "") for p, c in rows]
+    except sqlite3.Error as e:
+        log.error("lexical fts phrase failed: %s", e)
+        return []
+
+
+def _lexical_fts_tokens(q: str) -> List[tuple]:
+    """[(path, content)] по токенам FTS5 (AND, не обязательно смежные).
+    Не зависит от пути документа — находит нужный док по содержимому.
+    """
+    if not q or not os.path.exists(config.LEXICAL_DB):
+        return []
+    try:
+        conn = _lexical_connect()
+        try:
+            rows = conn.execute(
+                "SELECT path, content FROM docs_fts WHERE docs_fts MATCH ? LIMIT 25",
+                (q,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [(p, c or "") for p, c in rows]
+    except sqlite3.Error as e:
+        log.error("lexical fts tokens failed: %s", e)
+        return []
+
+
+def _lexical_candidates(base: str) -> List[tuple]:
+    """Все документы, чей path оканчивается на /base (неоднозначные имена: SKILL.md)."""
+    if not base or not os.path.exists(config.LEXICAL_DB):
+        return []
+    try:
+        conn = _lexical_connect()
+        try:
+            rows = conn.execute(
+                "SELECT path, content FROM docs_fts WHERE path LIKE ? LIMIT 20",
+                (f"%/{base}",),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [(p, c or "") for p, c in rows]
+    except sqlite3.Error as e:
+        log.error("lexical candidates failed: %s", e)
+        return []
+
+
+def _strip_uuid_prefix(base: str) -> str:
+    return re.sub(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-", "", base
+    )
+
+
+def _expand_result(result: Dict[str, Any]) -> None:
+    """Мутирует result: расширяет result['text'] соседними абзацами того же
+    документа. Неоднозначность имён (SKILL.md, README.md) снимается через
+    FTS5-фразу якоря — выбирается документ, в котором якорь реально есть.
+
+    При неудаче оставляет text как есть, context_expanded=False.
+    """
+    did = result.get("doc_id")
+    original = _clean_text(result.get("text", "") or "")
+    result["context_expanded"] = False
+    if not did or not original.strip():
+        return
+    anchor = _strip_anchor(original)
+    seed = re.sub(r'["“”]', "", anchor[:60]).lower()
+    base = _strip_uuid_prefix(os.path.basename(did))
+
+    # 1) точный документ по фразе якоря (FTS5, смежные токены)
+    phrase = " ".join(re.sub(r'["“”]', "", w) for w in anchor.split()[:8])
+    candidates = _lexical_fts_phrase(phrase)
+    # 2) фолбэк: FTS5 по ключевым токенам якоря (AND) — не зависит от пути.
+    #    Пунктуацию (в т.ч. ':' которая ломает MATCH как column-filter) режем.
+    if not candidates:
+        raw = re.sub(r'["“”]', "", anchor).lower()
+        toks = [re.sub(r"[^\w]", "", w) for w in raw.split()]
+        toks = [t for t in toks if len(t) > 2][:6]
+        if toks:
+            candidates = _lexical_fts_tokens(" ".join(toks))
+    # 3) фолбэк: все доки с таким basename
+    if not candidates and base:
+        candidates = _lexical_candidates(base)
+    if not candidates:
+        return
+    # выбираем документ, содержащий якорь (снимает неоднозначность).
+    # Сверяем через нормализацию (whitespace + кавычки), чтобы якорь
+    # находился даже при разнице в переводах строк.
+    content = None
+    for _path, _c in candidates:
+        _n, _o = _norm_map(_c)
+        if _n.find(seed[:30]) >= 0:
+            content = _c
+            break
+    if content is None:
+        content = candidates[0][1]  # фолбэк на первый
+    if not content:
+        return
+
+    norm, offsets = _norm_map(content)
+    idx = norm.find(seed)
+    if idx < 0 and len(seed) > 30:
+        idx = norm.find(seed[:30])
+    if idx < 0 and len(seed) > 20:
+        idx = norm.find(seed[:20])
+    if idx < 0:
+        return
+    idx = offsets[idx]
+    # разбиваем на абзацы и локализуем matched
+    paras = re.split(r"\n\s*\n", content)
+    pos = 0
+    matched = 0
+    for i, p in enumerate(paras):
+        if idx < pos + len(p):
+            matched = i
+            break
+        pos += len(p) + 2  # съедаем разделитель \n\n
+    else:
+        matched = len(paras) - 1
+    # растим окно симметрично от matched до EXPAND_MAX_CHARS
+    window = [paras[matched]]
+    step = 1
+    while len("\n\n".join(window)) < config.EXPAND_MAX_CHARS and (
+        matched - step >= 0 or matched + step < len(paras)
+    ):
+        if matched - step >= 0:
+            window.insert(0, paras[matched - step])
+        if matched + step < len(paras):
+            window.append(paras[matched + step])
+        step += 1
+    expanded = "\n\n".join(window)
+    if len(expanded) > config.EXPAND_MAX_CHARS:
+        expanded = expanded[: config.EXPAND_MAX_CHARS]
+    result["text"] = expanded
+    result["context_expanded"] = True
+    result["expanded_chars"] = len(expanded)
+    result["original_chars"] = len(original)
