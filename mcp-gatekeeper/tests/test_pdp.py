@@ -9,14 +9,15 @@ Real interface:
   gk.register_port(agent, project_id, port, what_for, run_as=, as_root=)
   gk.register_timer(agent, project_id, action, schedule, what_for, ...)
   gk.transfer(request_id, to_agent, project_id, by_agent=)
-Agent ids come from policy_v1.yaml: raven(8080-8099), antcat(8100-8119), owl(8120-8139).
+Agent ids come from policy_v1.yaml: raven(8081-8099 eff.; 8080 infra-reserved), antcat(8100-8119), owl(8120-8139).
+Infra-reserved (reserve.blocked_ports, ADR-0056 SSOT): 8080 nginx, 8090 hunter, 8099 uvicorn-API, 3002 docker-proxy -> PDP reserves them and audit stays silent.
 """
 
 import pytest
 
 
 def _req(**kw):
-    base = dict(agent="raven", project_id="lab", port=8080, what_for="test allocation")
+    base = dict(agent="raven", project_id="lab", port=8085, what_for="test allocation")
     base.update(kw)
     return base
 
@@ -26,11 +27,11 @@ def _req(**kw):
 # --------------------------------------------------------------------------- #
 
 def test_r1_known_agent_allowed(gk):
-    allow, reason = gk.pdp(_req(agent="raven", port=8080))
+    allow, reason = gk.pdp(_req(agent="raven", port=8085))
     assert allow is True, reason
 
 def test_r1_unknown_agent_rejected(gk):
-    allow, reason = gk.pdp(_req(agent="ghost-xyz", port=8080))
+    allow, reason = gk.pdp(_req(agent="ghost-xyz", port=8085))
     assert allow is False
     assert "неизвест" in reason.lower() or "identity" in reason.lower()
 
@@ -40,10 +41,11 @@ def test_r1_unknown_agent_rejected(gk):
 # --------------------------------------------------------------------------- #
 
 def test_r2_raven_low_bound_allowed(gk):
-    assert gk.pdp(_req(agent="raven", port=8080))[0] is True
+    # 8080 зарезервирован инфра (nginx) -> фактический низ пула raven теперь 8081
+    assert gk.pdp(_req(agent="raven", port=8081))[0] is True
 
 def test_r2_raven_high_bound_allowed(gk):
-    assert gk.pdp(_req(agent="raven", port=8099))[0] is True
+    assert gk.pdp(_req(agent="raven", port=8098))[0] is True
 
 def test_r2_raven_out_of_range_rejected(gk):
     # Global range [1024,65535]; порт выше диапазона -> REJECT (range).
@@ -69,7 +71,7 @@ def test_r2_owl_out_of_range_rejected(gk):
 # --------------------------------------------------------------------------- #
 
 def test_r3_three_ports_allowed(gk):
-    for i, port in enumerate((8080, 8081, 8082)):
+    for i, port in enumerate((8085, 8081, 8082)):
         r = gk.register_port("raven", "lab", port, f"svc number {i}")
         assert r["status"] == "ALLOW", r
 
@@ -108,7 +110,7 @@ def test_r4_reserved_in_range_rejected(gk, port):
     assert allow is False
     assert "резерв" in reason.lower() or "reserve" in reason.lower()
 
-@pytest.mark.parametrize("port", [22, 80, 443, 1023, 8888, 9090, 9187])
+@pytest.mark.parametrize("port", [22, 80, 443, 1023, 8888, 9090, 9187, 8080, 8090, 8099, 3002])
 def test_r4_other_reserved_blocked(gk, port):
     assert gk.pdp(_req(agent="raven", port=port))[0] is False
 
@@ -122,17 +124,17 @@ def test_r4_normal_port_allowed(gk):
 
 def test_r5_duplicate_port_refreshes_same_agent(gk):
     # Повторная регистрация того же порта тем же агентом (restart) = refresh.
-    gk.register_port("raven", "lab", 8080, "first claim")
-    r = gk.register_port("raven", "lab", 8080, "second claim")
+    gk.register_port("raven", "lab", 8085, "first claim")
+    r = gk.register_port("raven", "lab", 8085, "second claim")
     assert r["status"] == "ALLOW", r
-    live = [l for l in gk.leases.values() if l.agent == "raven" and l.port == 8080]
+    live = [l for l in gk.leases.values() if l.agent == "raven" and l.port == 8085]
     assert len(live) == 1, "повтор должен обновлять lease, а не плодить"
 
 
 def test_r5_cross_agent_port_rejected(gk):
     # Другой агент на тот же порт = реальный конфликт намерений -> REJECT.
-    gk.register_port("raven", "lab", 8080, "service A")
-    r = gk.register_port("owl", "lab", 8080, "service B")
+    gk.register_port("raven", "lab", 8085, "service A")
+    r = gk.register_port("owl", "lab", 8085, "service B")
     assert r["status"] == "REJECT"
     assert "занят" in r["error"].lower() or "заявлен" in r["error"].lower()
 
@@ -179,10 +181,10 @@ def test_r5_port_unit_field_populated(gk):
 # --------------------------------------------------------------------------- #
 
 def test_r6_empty_what_for_rejected(gk):
-    assert gk.pdp(_req(agent="raven", port=8080, what_for=""))[0] is False
+    assert gk.pdp(_req(agent="raven", port=8085, what_for=""))[0] is False
 
 def test_r6_filled_what_for_allowed(gk):
-    assert gk.pdp(_req(agent="raven", port=8080, what_for="metrics exporter"))[0] is True
+    assert gk.pdp(_req(agent="raven", port=8085, what_for="metrics exporter"))[0] is True
 
 def test_r6_duplicate_justification_same_agent_refreshes(gk):
     # Тот же агент + тот же what_for (даже для таймера, port=None) = refresh,
@@ -195,7 +197,7 @@ def test_r6_duplicate_justification_same_agent_refreshes(gk):
 
 def test_r6_cross_agent_justification_rejected(gk):
     # Перехват чужого оправдания (другой агент с тем же текстом) = аномалия.
-    gk.register_port("raven", "lab", 8080, "prometheus exporter")
+    gk.register_port("raven", "lab", 8085, "prometheus exporter")
     allow, reason = gk.pdp(dict(agent="owl", project_id="lab", port=8120,
                                 what_for="prometheus exporter"))
     assert allow is False
@@ -204,7 +206,7 @@ def test_r6_cross_agent_justification_rejected(gk):
 def test_r6_same_justification_different_port_allowed(gk):
     # Documents real behavior: exact-match dedup is port-scoped, so the same
     # what_for on a DIFFERENT port is allowed (semantic dedup is v2/fail-open).
-    gk.register_port("raven", "lab", 8080, "prometheus exporter")
+    gk.register_port("raven", "lab", 8085, "prometheus exporter")
     r = gk.register_port("raven", "lab", 8081, "prometheus exporter")
     assert r["status"] == "ALLOW", r
 
@@ -227,7 +229,7 @@ def test_r7_run_as_root_allowed_for_known(gk):
     assert ok is True
 
 def test_r7_run_as_limited_allowed(gk):
-    assert gk.pdp(_req(agent="raven", port=8080, run_as="mcp-gatekeeper"))[0] is True
+    assert gk.pdp(_req(agent="raven", port=8085, run_as="mcp-gatekeeper"))[0] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -235,45 +237,45 @@ def test_r7_run_as_limited_allowed(gk):
 # --------------------------------------------------------------------------- #
 
 def test_r8_project_id_required(gk):
-    allow, reason = gk.pdp(_req(agent="raven", project_id="", port=8080))
+    allow, reason = gk.pdp(_req(agent="raven", project_id="", port=8085))
     assert allow is False
     assert "project" in reason.lower()
 
 def test_r8_same_agent_port_refreshes_across_projects(gk):
     # Тот же агент, тот же порт, другой проект -> refresh (ЗавЛаб 12.07).
-    gk.register_port("raven", "projA", 8080, "service A")
-    r = gk.register_port("raven", "projB", 8080, "service B")
+    gk.register_port("raven", "projA", 8085, "service A")
+    r = gk.register_port("raven", "projB", 8085, "service B")
     assert r["status"] == "ALLOW", r
 
 
 def test_r8_cross_agent_port_rejected(gk):
     # Другой агент на тот же порт = конфликт -> REJECT.
-    gk.register_port("raven", "projA", 8080, "service A")
-    r = gk.register_port("owl", "projB", 8080, "service B")
+    gk.register_port("raven", "projA", 8085, "service A")
+    r = gk.register_port("owl", "projB", 8085, "service B")
     assert r["status"] == "REJECT"
 
 def test_r8_handoff_transfers_tenant(gk):
-    reg = gk.register_port("raven", "projA", 8080, "shared service")
+    reg = gk.register_port("raven", "projA", 8085, "shared service")
     rid = reg["request_id"]
     res = gk.transfer(rid, to_agent="antcat", project_id="projA", by_agent="raven")
     assert res["status"] == "TRANSFERRED"
     assert res["agent"] == "antcat"
 
 def test_r8_handoff_only_by_current_tenant(gk):
-    reg = gk.register_port("raven", "projA", 8080, "shared service")
+    reg = gk.register_port("raven", "projA", 8085, "shared service")
     rid = reg["request_id"]
     res = gk.transfer(rid, to_agent="owl", project_id="projA", by_agent="antcat")
     assert res["status"] == "FORBIDDEN"
 
 def test_r8_lease_timeout_releases(gk):
-    reg = gk.register_port("raven", "projA", 8080, "temp service")
+    reg = gk.register_port("raven", "projA", 8085, "temp service")
     rid = reg["request_id"]
     # Force heartbeat far in the past, then run the reaper.
     gk.leases[rid].last_heartbeat = 0.0
     released = gk.reaper_tick()
     assert rid in released
     # Port should now be free to reclaim.
-    r2 = gk.register_port("raven", "projA", 8080, "temp service two")
+    r2 = gk.register_port("raven", "projA", 8085, "temp service two")
     assert r2["status"] == "ALLOW", r2
 
 
