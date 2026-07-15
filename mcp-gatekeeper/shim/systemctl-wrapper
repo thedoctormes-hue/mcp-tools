@@ -151,7 +151,7 @@ fi
 # --------------------------------------------------------------------------
 # Извлечение порта из юнита (если есть)
 # --------------------------------------------------------------------------
-PORT=""
+PORTS=()
 UNITFILE=""
 for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
   if [[ -f "$d/$UNIT" ]]; then
@@ -160,23 +160,35 @@ for d in /etc/systemd/system /lib/systemd/system /usr/lib/systemd/system; do
   fi
 done
 if [[ -n "$UNITFILE" ]]; then
-  # Извлекаем TCP-порт из systemd socket-синтаксиса. Поддерживаем:
-  #   ListenStream=48080           (порт-только)
-  #   ListenStream=127.0.0.1:48080 / 0.0.0.0: / [::]:
-  #   Listen=... / ListenAddress=...
-  # Unix-сокеты (/run/x.sock) и всё без порта — не гейтим.
-  raw=$(grep -oE '(ListenStream|ListenAddress|Listen)=[^ ]+' "$UNITFILE" 2>/dev/null | head -1 | sed 's/^[^=]*=//')
-  PORT=""
-  if [[ -n "$raw" ]]; then
+  # 1) Socket-синтаксис (ListenStream/ListenAddress/Listen) — как было
+  while IFS= read -r raw; do
+    [[ -z "$raw" ]] && continue
     p=$(printf '%s' "$raw" | grep -oE ':[0-9]{2,5}$' | tr -d ':')
-    if [[ -z "$p" && "$raw" =~ ^[0-9]{2,5}$ ]]; then
-      p="$raw"
+    [[ -z "$p" && "$raw" =~ ^[0-9]{2,5}$ ]] && p="$raw"
+    [[ -n "$p" ]] && PORTS+=("$p")
+  done < <(grep -oE '(ListenStream|ListenAddress|Listen)=[^ ]+' "$UNITFILE" 2>/dev/null | sed 's/^[^=]*=//')
+  # 2) ExecStart ... --port N / --port=N  (ROOT 2 fix: шим раньше не видел)
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && PORTS+=("$p")
+  done < <(grep -oE 'ExecStart=.*' "$UNITFILE" 2>/dev/null | grep -oE '--port[= ]?[0-9]{2,5}' | grep -oE '[0-9]{2,5}$')
+  # 3) Environment NAME_PORT_NAME=число (PORT=, MCP_PORT=, API_PORT= ...)
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && PORTS+=("$p")
+  done < <(grep -oE 'Environment=[A-Za-z_]*PORT[A-Za-z_]*=[0-9]{2,5}' "$UNITFILE" 2>/dev/null | grep -oE '[0-9]{2,5}$')
+  # дедуп (сохраняем порядок)
+  seen=" "; PORTS_UNIQ=()
+  for p in "${PORTS[@]:-}"; do
+    [[ -z "$p" ]] && continue
+    if [[ "$seen" != *" $p "* ]]; then
+      seen="$seen$p "; PORTS_UNIQ+=("$p")
     fi
-    PORT="$p"
-  fi
+  done
+  PORTS=("${PORTS_UNIQ[@]:-}")
 fi
 
-if [[ -n "$PORT" ]]; then
+# Регистрируем КАЖДЫЙ найденный порт; fail-closed на всём, кроме ALLOW.
+for PORT in "${PORTS[@]:-}"; do
+  [[ -z "$PORT" ]] && continue
   DEC=$(timeout 5 "$HELPER" port "$PORT" "systemd $UNIT" "$AGENT" "$PROJECT" $AS_ROOT_FLAG --unit "$UNIT" 2>/dev/null)
   if [[ "$DEC" == "REJECT" ]]; then
     echo "gatekeeper shim: REJECT port $PORT for $UNIT (agent=$AGENT) — blocked (порядок нарушен?)" >&2
@@ -193,7 +205,7 @@ if [[ -n "$PORT" ]]; then
     echo "gatekeeper shim: если нужно принудительно — задай AGENT_ID и/или GK_AS_ROOT=1 и повтори." >&2
     exit 2
   fi
-fi
+done
 
 # --- Таймеры (ADR-0056 Уровень 1-Г): регистрируем таймер при enable/start/restart ---
 # Зеркалит порт-путь: timeout через helper, fail-closed на всём кроме ALLOW.

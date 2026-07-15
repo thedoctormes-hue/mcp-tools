@@ -50,14 +50,17 @@ ALERTS=0
 SEEN=0
 
 log_alert() {
-  local port="$1"; shift
-  local detail="$*"
-  local line="$NOW_ISO ALERT port=$port $detail"
+  local port="$1"; local human="$2"; local raw="${3:-}"
+  local line="$NOW_ISO ALERT $human"
   echo "GK-AUDIT [ALERT] $line"
-  # [TELEGRAM] — пометка для внешнего коллектора (grep /var/log/gk-audit.log)
-  echo "$line [TELEGRAM]" >> "$AUDIT_LOG" 2>/dev/null || true
+  # [TELEGRAM] — пометка: строка уходит/пойдёт в Telegram-нотификатор (grep по логу)
+  if [[ -n "$raw" ]]; then
+    echo "$line | raw: $raw [TELEGRAM]" >> "$AUDIT_LOG" 2>/dev/null || true
+  else
+    echo "$line [TELEGRAM]" >> "$AUDIT_LOG" 2>/dev/null || true
+  fi
   if [[ -n "$NOTIFY_CMD" && -x "$NOTIFY_CMD" ]]; then
-    "$NOTIFY_CMD" "GK-AUDIT ALERT port=$port $detail" 2>/dev/null || true
+    "$NOTIFY_CMD" "GK-AUDIT ALERT $human" 2>/dev/null || true
   fi
 }
 
@@ -111,7 +114,20 @@ while IFS= read -r line; do
 
   if [[ "$allowed" -eq 0 ]]; then
     ALERTS=$((ALERTS + 1))
-    log_alert "$port" "unauthorized listening socket: $line"
+    # разбор ss-строки в человекочитаемый вид
+    local addrport bind_addr proc_name proc_pid human_detail
+    addrport="$(echo "$line" | awk '{print $4}')"
+    bind_addr="$(echo "$addrport" | awk -F: '{print $1}')"
+    proc_name="$(echo "$line" | grep -oE 'users:\(\("[^"]+"' | head -1 | sed -E 's/^users:\(\("//; s/"$//')"
+    proc_pid="$(echo "$line" | grep -oE 'pid=[0-9]+' | head -1 | sed -E 's/pid=//')"
+    if [[ -n "$proc_name" ]]; then
+      human_detail="порт $port на $bind_addr: слушает $proc_name"
+      [[ -n "$proc_pid" ]] && human_detail="$human_detail [pid $proc_pid]"
+    else
+      human_detail="порт $port на $bind_addr: неизвестный процесс"
+    fi
+    human_detail="$human_detail — НЕ зарегистрирован в gatekeeper (unauthorized listening socket)"
+    log_alert "$port" "$human_detail" "$line"
   fi
 done < <(ss -tlnp 2>/dev/null | tail -n +2)
 
