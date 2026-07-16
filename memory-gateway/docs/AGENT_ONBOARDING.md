@@ -7,7 +7,7 @@
 
 - MCP-сервер `memory-gateway` зарегистрирован в `mcp.servers` (`~/.openclaw/openclaw.json`),
   запуск через stdio: `python3 /root/LabDoctorM/projects/mcp-tools/memory-gateway/run.py`.
-- Инструменты (3): `search_memory`, `get_document`, `gateway_health`.
+- Инструменты (3): `memory-gateway__search_memory`, `memory-gateway__get_document`, `memory-gateway__gateway_health`.
 - Сервер выполняет гибридный поиск: AnythingLLM vector-search + FTS5/BM25 `lexical.db`,
   слияние RRF. Только сырые данные, без `/chat` и LLM-синтеза.
 
@@ -19,18 +19,29 @@ OpenClaw автоматически дописывает содержимое `<
 
 Текст директивы:
 
-> У тебя есть прямой доступ к семантической памяти лаборатории (базе знаний) через
-> подключённый MCP-инструмент `search_memory` (сервер `memory-gateway`).
+> ## Семантическая память лаборатории — ЕДИНСТВЕННЫЙ СПОСОБ: MCP `memory-gateway`
 >
-> Правила использования:
-> - При любом вопросе, касающемся документации лабы, настроек, скриптов, ключей,
->   архитектуры, инцидентов или паттернов — ОБЯЗАН сначала вызвать `search_memory`
->   и использовать только полученные факты.
-> - Для получения полного текста документа по `doc_id` из результатов поиска используй
->   `get_document`.
-> - Использование старых чат-костылей (`/chat`, LLM-синтез поверх памяти) и галлюцинации
->   строго запрещены. Факты — только из `search_memory`.
+> Доступ к семантической памяти лаборатории (база знаний: vector + lexical, RRF)
+> осуществляется ИСКЛЮЧИТЕЛЬНО через MCP-сервер `memory-gateway`:
+>
+> - `memory-gateway__search_memory(query, top_k?, workspace?)` — гибридный семантический поиск (ОСНОВНОЙ инструмент).
+> - `memory-gateway__get_document(doc_id)` — полный текст документа по `doc_id` из результатов поиска.
+> - `memory-gateway__gateway_health()` — проверка здоровья шлюза и слоёв.
+>
+> ПРАВИЛА:
+> - При любом вопросе про документации лабы, настройки, скрипты, ключи, архитектуру,
+>   инциденты, паттерны — ОБЯЗАН сначала вызвать `memory-gateway__search_memory` и
+>   опираться ТОЛЬКО на полученные факты.
+> - Факты — только из `memory-gateway`. LLM-синтез поверх памяти и `/chat` строго запрещены.
 > - Не прописывай токены AnythingLLM/OpenRouter: шлюз берёт их из `secrets/` сам.
+>
+> ⛔ СТРОГО ЗАПРЕЩЕНО (не является рабочим путём):
+> - Native `memory_search` OpenClaw — мёртв (ADR-0054; плагины `memory-core`/`memory-wiki` отключены). НЕ вызывать.
+> - `lab_search.py` и скилл `labsearch` — выведены из эксплуатации (ALM — единственный стек). НЕ использовать.
+> - Прямые REST-вызовы к AnythingLLM в обход MCP-шлюза — запрещены.
+>
+> Единственный рабочий и канонический стек семантической памяти лаборатории — AnythingLLM (ALM).
+> Доступ к нему — ТОЛЬКО через `memory-gateway` (MCP).
 
 ## Deployment (какие агенты затронуты)
 
@@ -43,7 +54,7 @@ OpenClaw автоматически дописывает содержимое `<
 1. `openclaw mcp show memory-gateway` — сервер зарегистрирован (stdio, command python3).
 2. `openclaw mcp probe memory-gateway` — `3 tools, resources, prompts`.
 3. Контрольный запуск агента с запросом по базе (напр. «TTS keypool rotation» или
-   «AnythingLLM setup»): убедиться, что агент вызвал `search_memory` и ответил строго
+   «AnythingLLM setup»): убедиться, что агент вызвал `memory-gateway__search_memory` и ответил строго
    на основе полученного контекста (см. логи шлюза `logs/memory-gateway.log` и логи OpenClaw).
 
 ## Безопасность
