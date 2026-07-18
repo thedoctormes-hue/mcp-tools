@@ -163,9 +163,40 @@ def _doc_id_from_meta(meta: Dict[str, Any], title: str) -> str:
     return title
 
 
+# ── Кэш vector-ответов (снижение нагрузки на ALM, ускорение ответов) ───────
+_VECTOR_CACHE: "Dict[tuple, tuple]" = {}
+_VECTOR_CACHE_LOCK = threading.Lock()
+_VECTOR_CACHE_TTL = float(os.environ.get("MG_VECTOR_CACHE_TTL", "120"))
+_VECTOR_CACHE_MAX = int(os.environ.get("MG_VECTOR_CACHE_MAX", "256"))
+
+
+def _vector_cache_get(query: str, top_k: int, threshold: float, workspace) -> "Optional[list]":
+    key = (query, top_k, threshold, workspace)
+    with _VECTOR_CACHE_LOCK:
+        entry = _VECTOR_CACHE.get(key)
+        if entry and (time.monotonic() - entry[1]) < _VECTOR_CACHE_TTL:
+            return entry[0]
+    return None
+
+
+def _vector_cache_put(query: str, top_k: int, threshold: float, workspace, results: list) -> None:
+    key = (query, top_k, threshold, workspace)
+    with _VECTOR_CACHE_LOCK:
+        _VECTOR_CACHE[key] = (results, time.monotonic())
+        if len(_VECTOR_CACHE) > _VECTOR_CACHE_MAX:
+            try:
+                _VECTOR_CACHE.pop(next(iter(_VECTOR_CACHE)))
+            except StopIteration:
+                pass
+
+
 def vector_search(query: str, top_k: int, threshold: float,
                   workspace: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Векторный поиск по одному или всем workspace (параллельно)."""
+    """Векторный поиск по одному или всем workspace (параллельно).
+    Результат кэшируется на MG_VECTOR_CACHE_TTL сек (см. _vector_cache_*)."""
+    cached = _vector_cache_get(query, top_k, threshold, workspace)
+    if cached is not None:
+        return cached
     slugs = [workspace] if workspace else workspace_slugs()
     if not slugs:
         return []
@@ -179,7 +210,9 @@ def vector_search(query: str, top_k: int, threshold: float,
             except Exception as e:  # noqa: BLE001
                 log.warning("vector future error: %s", e)
     hits.sort(key=lambda h: h["vector_score"], reverse=True)
-    return hits[:top_k]
+    out = hits[:top_k]
+    _vector_cache_put(query, top_k, threshold, workspace, out)
+    return out
 
 
 # ── Lexical-слой (FTS5 / BM25 по lexical.db, read-only) ──────────────────
