@@ -1,0 +1,10 @@
+[Unit]
+Description=memory-gateway health check every 10 minutes (P5-2)
+
+[Timer]
+OnCalendar=*:0/10
+Unit=memory-gateway-health.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

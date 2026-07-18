@@ -9,6 +9,9 @@ from memory_gateway import search, config
 
 
 def test_alm_latency_stats_empty():
+    # буфер глобальный — изолируемся от других тестов, наполняющих его замерами
+    with search._ALM_LAT_LOCK:
+        search._ALM_LATENCY.clear()
     # fresh module state -> no samples
     stats = search.alm_latency_stats()
     assert stats["count"] == 0

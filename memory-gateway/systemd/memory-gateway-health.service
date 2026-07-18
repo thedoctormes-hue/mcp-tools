@@ -1,0 +1,10 @@
+[Unit]
+Description=memory-gateway health check alert (P5-2)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/LabDoctorM/projects/mcp-tools/memory-gateway
+ExecStart=/usr/bin/python3 /root/LabDoctorM/projects/mcp-tools/memory-gateway/health_check.py
+# oneshot + неудача (exit 1) = сигнал для мониторинга; не перезапускаем автоматически
