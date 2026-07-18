@@ -10,6 +10,10 @@ Type=simple
 Environment=MG_TRANSPORT=streamable-http
 Environment=MG_HOST=127.0.0.1
 Environment=MG_PORT=8091
+# Сохраняем переопределения из бывшего stdio-конфига openclaw.json
+# (иначе http-сервер возьмёт базовые defaults config.py: 1 / 4000).
+Environment=MG_EXPAND_PARAGRAPHS=2
+Environment=MG_EXPAND_MAX_CHARS=6000
 ExecStart=/usr/bin/python3 /root/LabDoctorM/projects/mcp-tools/memory-gateway/run.py
 Restart=on-failure
 RestartSec=5
