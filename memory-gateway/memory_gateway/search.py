@@ -12,6 +12,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+import json
 import requests
 
 from . import config
@@ -112,6 +113,51 @@ def workspace_slugs() -> List[str]:
         return []
 
 
+# ── D1: workspace-aware routing ─────────────────────────────────────────
+_WORKSPACE_MAP: Optional[List[Dict[str, Any]]] = None
+
+def _load_workspace_map() -> List[Dict[str, Any]]:
+    """Load workspace_map.json once, cached in module memory."""
+    global _WORKSPACE_MAP
+    if _WORKSPACE_MAP is not None:
+        return _WORKSPACE_MAP
+    try:
+        with open('/root/LabDoctorM/.ops/shared/anythingllm-sync/workspace_map.json', "r", encoding="utf-8") as f:
+            _WORKSPACE_MAP = json.load(f)
+    except Exception as e:
+        log.warning("D1: failed to load workspace_map.json: %s", e)
+        _WORKSPACE_MAP = []
+    return _WORKSPACE_MAP
+
+
+def workspace_slugs_for_query(query: str) -> List[str]:
+    """D1: Return workspace slugs whose topics match the query.
+
+    For each workspace in workspace_map.json, checks if any of its "topics"
+    keywords appear as case-insensitive substrings in the query.
+    If no match found, falls back to all slugs.
+    """
+    if not query:
+        return workspace_slugs()
+    q_lower = query.lower()
+    wmap = _load_workspace_map()
+    if not wmap:
+        return workspace_slugs()
+    matched = []
+    for ws in wmap:
+        slug = ws.get("slug")
+        if not slug:
+            continue
+        topics = ws.get("topics", [])
+        if any(topic.lower() in q_lower for topic in topics):
+            matched.append(slug)
+    if matched:
+        return sorted(set(matched))
+    # fallback: all slugs
+    return workspace_slugs()
+
+
+
 # ── Vector-слой (AnythingLLM /vector-search) ────────────────────────────
 def _vector_search_one(slug: str, query: str, top_k: int, threshold: float) -> List[Dict[str, Any]]:
     tok = load_token()
@@ -169,8 +215,47 @@ _VECTOR_CACHE_LOCK = threading.Lock()
 _VECTOR_CACHE_TTL = float(os.environ.get("MG_VECTOR_CACHE_TTL", "120"))
 _VECTOR_CACHE_MAX = int(os.environ.get("MG_VECTOR_CACHE_MAX", "256"))
 
+# D2: sync-state invalidation — следим за mtime реального файла-продюсера.
+# Файл incremental_report.json перезаписывается каждые 5 мин (alm-sync-incremental.service).
+# При изменении mtime — полный сброс кэша (garbage window ≤ mtime-latency).
+_SYNC_STATE_FILE = os.environ.get(
+    "MG_SYNC_STATE_FILE",
+    "/root/LabDoctorM/.ops/shared/anythingllm-sync/incremental_report.json",
+)
+_SYNC_STATE_MTIME: float = 0.0
+_SYNC_STATE_CHECK_INTERVAL = 5.0  # проверяем mtime не чаще раза в 5 сек
+_SYNC_STATE_LAST_CHECK: float = 0.0
+
+
+def _check_sync_state() -> None:
+    """D2: сброс кэша при обновлении индекса ALM.
+    Проверяет mtime incremental_report.json (пишется каждые 5 мин инкременталом).
+    Вызывается перед каждым поиском, но не чаще _SYNC_STATE_CHECK_INTERVAL.
+    """
+    global _SYNC_STATE_MTIME, _SYNC_STATE_LAST_CHECK
+    now = time.monotonic()
+    if now - _SYNC_STATE_LAST_CHECK < _SYNC_STATE_CHECK_INTERVAL:
+        return
+    _SYNC_STATE_LAST_CHECK = now
+    try:
+        mtime = os.path.getmtime(_SYNC_STATE_FILE)
+    except OSError:
+        return  # файл не найден — кэш не трогаем
+    if _SYNC_STATE_MTIME == 0.0:
+        # первый вызов — запоминаем mtime без сброса
+        _SYNC_STATE_MTIME = mtime
+        return
+    if mtime > _SYNC_STATE_MTIME:
+        _SYNC_STATE_MTIME = mtime
+        with _VECTOR_CACHE_LOCK:
+            n = len(_VECTOR_CACHE)
+            _VECTOR_CACHE.clear()
+        if n:
+            log.info("D2: sync state changed, cleared %d cached entries", n)
+
 
 def _vector_cache_get(query: str, top_k: int, threshold: float, workspace) -> "Optional[list]":
+    _check_sync_state()
     key = (query, top_k, threshold, workspace)
     with _VECTOR_CACHE_LOCK:
         entry = _VECTOR_CACHE.get(key)
@@ -197,7 +282,7 @@ def vector_search(query: str, top_k: int, threshold: float,
     cached = _vector_cache_get(query, top_k, threshold, workspace)
     if cached is not None:
         return cached
-    slugs = [workspace] if workspace else workspace_slugs()
+    slugs = [workspace] if workspace else workspace_slugs_for_query(query)
     if not slugs:
         return []
     hits: List[Dict[str, Any]] = []
