@@ -46,6 +46,20 @@ QUERY_MAX_LEN = int(os.environ.get("MG_QUERY_MAX_LEN", "1000"))
 CANDIDATE_MULT = int(os.environ.get("MG_CANDIDATE_MULT", "3"))
 # Ограничение параллельных vector-запросов по workspace.
 VECTOR_MAX_WORKERS = int(os.environ.get("MG_VECTOR_MAX_WORKERS", "6"))
+# Ограничение конкурентных вызовов ALM на процесс (fan-out throttle, P4).
+VECTOR_MAX_INFLIGHT = int(os.environ.get("MG_VECTOR_MAX_INFLIGHT", "4"))
+
+# ── Fusion-стратегия (P1: score-calibrated вместо чистого RRF) ──────
+# 'rrf'     — классический Reciprocal Rank Fusion (k=60), игнорирует абс. скоры.
+# 'weighted' — нормализация vector-cosine(0..1) и lexical-BM25(->0..1) в
+#              общую шкалу + взвешенная сумма α·vec+(1-α)·lex + совокупный порог.
+#              Убирает шум, когда слои расходятся (подтверждено eval NDCG@5 0.328->).
+FUSION_MODE = os.environ.get("MG_FUSION_MODE", "weighted").lower()
+# Вес векторного слоя в weighted-fusion (1-α — вес lexical).
+FUSION_VECTOR_WEIGHT = float(os.environ.get("MG_FUSION_VECTOR_WEIGHT", "0.6"))
+# Совокупный порог: результат отбрасывается, если ОБА слоя слабы
+# (lexical-only шум с высоким BM25 по коротким токенам).
+FUSION_MIN_COMBINED = float(os.environ.get("MG_FUSION_MIN_COMBINED", "0.05"))
 
 # ── Context Assembly (умная склейка контекста) ────────────────────────
 # Если найден релевантный пассаж, шлюз расширяет его до связного блока:

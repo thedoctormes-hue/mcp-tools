@@ -164,7 +164,7 @@ def test_hybrid_degraded_when_vector_fails(temp_lexical, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("vector down")
     monkeypatch.setattr(search, "vector_search", boom)
-    out = search.hybrid_search("дедлок", top_k=5)
+    out = search.hybrid_search("дедлок", top_k=5, fusion="rrf")
     assert out["degraded"] is True
     assert out["count"] >= 1            # lexical всё равно вернул
     assert out["layers"]["lexical"] >= 1
@@ -175,7 +175,7 @@ def test_hybrid_merges_both(temp_lexical, monkeypatch):
         return [{"source": "vector", "workspace": "x", "title": "INC-050",
                  "doc_id": "projects/x/INC-050.md", "text": "vector ctx", "vector_score": 0.8}]
     monkeypatch.setattr(search, "vector_search", fake_vector)
-    out = search.hybrid_search("дедлок", top_k=5)
+    out = search.hybrid_search("дедлок", top_k=5, fusion="rrf")
     assert out["degraded"] is False
     assert out["layers"]["vector"] == 1 and out["layers"]["lexical"] >= 1
     top = out["results"][0]

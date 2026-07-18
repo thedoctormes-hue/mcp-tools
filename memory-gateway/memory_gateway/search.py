@@ -221,11 +221,84 @@ def _dedup_key(item: Dict[str, Any]) -> str:
     return os.path.basename(str(did)).lower()
 
 
+def _minmax(vals: List[float]) -> Dict[float, float]:
+    """Min-max нормализация списка в 0..1.
+    Одно значение (или все равны) -> 1.0 (single candidate = «лучший»,
+    иначе min-max даёт 0.0 и результат отсекался бы порогом).
+    """
+    if not vals:
+        return {}
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 1e-9:
+        return {v: 1.0 for v in vals}
+    return {v: (v - lo) / (hi - lo) for v in vals}
+
+
+def _fuse_weighted(vector_hits, lexical_hits, top_k):
+    """Score-calibrated fusion (P1).
+
+    Нормализует vector-cosine(уже 0..1) и lexical-BM25(отриц., чем меньше
+    тем лучше) в общую 0..1 шкалу, затем взвешенная сумма
+    α·vec + (1-α)·lex. Дедуп по basename (как в RRF). Совокупный порог
+    FUSION_MIN_COMBINED отсекает чистый lexical-шум (высокий BM25 по
+    коротким OR-токенам при слабом/нулевом векторе).
+    """
+    alpha = config.FUSION_VECTOR_WEIGHT
+    v_scores = [float(h.get("vector_score") or 0.0) for h in vector_hits]
+    l_scores = [float(h.get("lexical_score") or 0.0) for h in lexical_hits]
+    v_norm = _minmax(v_scores)
+    l_norm = _minmax(l_scores)
+
+    fused: Dict[str, Dict[str, Any]] = {}
+    for hits, norms, weight in (  # (список хитов, норм. скоры, вес слоя)
+        (vector_hits, [v_norm.get(s, 0.0) for s in v_scores], alpha),
+        (lexical_hits, [l_norm.get(s, 0.0) for s in l_scores], 1.0 - alpha),
+    ):
+        for h, sc in zip(hits, norms):
+            key = _dedup_key(h)
+            if not key:
+                continue
+            entry = fused.get(key)
+            if entry is None:
+                entry = {
+                    "doc_id": h.get("doc_id"),
+                    "title": h.get("title"),
+                    "workspace": h.get("workspace"),
+                    "text": h.get("text", ""),
+                    "sources": [],
+                    "vector_score": None,
+                    "lexical_score": None,
+                    "fused_score": 0.0,
+                }
+                fused[key] = entry
+            entry["fused_score"] += weight * sc
+            src = h.get("source")
+            if src and src not in entry["sources"]:
+                entry["sources"].append(src)
+            if h.get("vector_score") is not None:
+                entry["vector_score"] = h["vector_score"]
+            if h.get("lexical_score") is not None:
+                entry["lexical_score"] = h["lexical_score"]
+            if len(h.get("text", "")) > len(entry["text"]):
+                entry["text"] = h["text"]
+            if h.get("workspace") and not entry["workspace"]:
+                entry["workspace"] = h["workspace"]
+            if "/" in str(h.get("doc_id", "")) and "/" not in str(entry["doc_id"] or ""):
+                entry["doc_id"] = h["doc_id"]
+
+    ordered = [e for e in fused.values() if e["fused_score"] >= config.FUSION_MIN_COMBINED]
+    ordered.sort(key=lambda e: e["fused_score"], reverse=True)
+    for e in ordered:
+        e["rrf_score"] = round(e.pop("fused_score"), 6)
+    return ordered[:top_k]
+
+
 def rrf_merge(vector_hits: List[Dict[str, Any]],
               lexical_hits: List[Dict[str, Any]],
               top_k: int) -> List[Dict[str, Any]]:
     """RRF: score = sum(1/(rank+K)) по спискам. Дедуп по имени документа.
     При дубле сохраняем самый информативный вариант (с непустым text/workspace)."""
+    k = config.RRF_K
     k = config.RRF_K
     merged: Dict[str, Dict[str, Any]] = {}
     for hits in (vector_hits, lexical_hits):
@@ -270,10 +343,12 @@ def rrf_merge(vector_hits: List[Dict[str, Any]],
 # ── Публичный гибридный поиск ───────────────────────────────────────────
 def hybrid_search(query: str, top_k: int,
                   workspace: Optional[str] = None,
-                  expand_context: bool = config.EXPAND_CONTEXT_DEFAULT) -> Dict[str, Any]:
-    """Гибрид: vector + lexical ПАРАЛЛЕЛЬНО, слияние RRF. Возвращает чистый JSON.
+                  expand_context: bool = config.EXPAND_CONTEXT_DEFAULT,
+                  fusion: Optional[str] = None) -> Dict[str, Any]:
+    """Гибрид: vector + lexical ПАРАЛЛЕЛЬНО, слияние. Возвращает чистый JSON.
 
     degraded=True, если один из слоёв недоступен (второй всё равно вернёт данные).
+    fusion: 'weighted' (default, score-calibrated) | 'rrf' (classic).
     """
     query = (query or "").strip()[: config.QUERY_MAX_LEN]
     if not query:
@@ -301,7 +376,11 @@ def hybrid_search(query: str, top_k: int,
             lex_ok = False
             log.error("lexical layer failed: %s", e)
 
-    results = rrf_merge(vector_hits, lexical_hits, top_k)
+    mode = (fusion or config.FUSION_MODE).lower()
+    if mode == "weighted":
+        results = _fuse_weighted(vector_hits, lexical_hits, top_k)
+    else:
+        results = rrf_merge(vector_hits, lexical_hits, top_k)
     if expand_context:
         for r in results:
             _expand_result(r)

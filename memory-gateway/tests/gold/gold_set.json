@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "scale": "graded relevance 0=нерелевантен, 1=косвенно, 2=релевантен, 3=точное попадание",
+  "queries": [
+    {
+      "q": "AnythingLLM setup vector-search Bearer token semantic memory",
+      "rel": {
+        "app/collector/hotdir/README.md": 3,
+        "app/collector/hotdir/lab-memory-stack.md": 3,
+        "workspaces/streikbrecher/anythingllm_semantic_memory_backlog.md": 3,
+        "app/collector/hotdir/AGENT_ONBOARDING.md": 2,
+        "app/collector/hotdir/ADR-0054-native-memory-search-dead.md": 2
+      }
+    },
+    {
+      "q": "RUL-009 manual reindex semantic memory only streikbrecher",
+      "rel": {
+        "workspaces/streikbrecher/anythingllm_semantic_memory_backlog.md": 3,
+        "app/collector/hotdir/ADR-0054-native-memory-search-dead.md": 1,
+        "app/collector/hotdir/RECOVERY-PLAN-2026-07-10.md": 1
+      }
+    },
+    {
+      "q": "RRF hybrid vector lexical fusion Reciprocal Rank",
+      "rel": {
+        "app/collector/hotdir/0057-hybrid-vectors-graph.md": 3,
+        "app/collector/hotdir/lab-memory-stack.md": 2
+      }
+    },
+    {
+      "q": "gatekeeper port registration PDP policy lease",
+      "rel": {
+        "app/collector/hotdir/ADR-0056-gatekeeper-ssot.md": 3,
+        "workspaces/streikbrecher/anythingllm_semantic_memory_backlog.md": 0
+      }
+    },
+    {
+      "q": "free-api-hunter deployment nginx Let's Encrypt HTTPS",
+      "rel": {
+        "app/collector/hotdir/frontend-spec.md": 2,
+        "workspaces/streikbrecher/anythingllm_semantic_memory_backlog.md": 0
+      }
+    },
+    {
+      "q": "paperless-ngx agent to human bridge artifact delivery",
+      "rel": {
+        "workspaces/streikbrecher/anythingllm_semantic_memory_backlog.md": 2,
+        "app/collector/hotdir/RECOVERY-PLAN-2026-07-10.md": 0
+      }
+    },
+    {
+      "q": "incident raven wrote into legacy ALM with another agent token",
+      "rel": {
+        "app/collector/hotdir/INC-2026-07-16-000300-raven-alm-trespass.md": 3
+      }
+    },
+    {
+      "q": "OPENROUTER_API_KEY secret leak bashrc environment",
+      "rel": {
+        "workspaces/streikbrecher/anythingllm_semantic_memory_backlog.md": 1,
+        "app/collector/hotdir/RECOVERY-PLAN-2026-07-10.md": 0
+      }
+    },
+    {
+      "q": "xray vless-reality systemd unit port 443 VPN infrastructure",
+      "rel": {
+        "app/collector/hotdir/RECOVERY-PLAN-2026-07-10.md": 2,
+        "workspaces/streikbrecher/anythingllm_semantic_memory_backlog.md": 0
+      }
+    },
+    {
+      "q": "memory-gateway MCP server tools search_memory get_document",
+      "rel": {
+        "workspaces/streikbrecher/anythingllm_semantic_memory_backlog.md": 2,
+        "app/collector/hotdir/AGENT_ONBOARDING.md": 2,
+        "app/collector/hotdir/0057-hybrid-vectors-graph.md": 1
+      }
+    }
+  ]
+}
