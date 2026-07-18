@@ -1,7 +1,6 @@
 """Sprint B / P4: ALM fan-out throttle + latency telemetry (read-only checks)."""
 import sys
 import os
-import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

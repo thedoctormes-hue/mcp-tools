@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, ROOT)
 
-import memory_gateway.search as search  # memory_gateway.search
+import memory_gateway.search as search  # noqa: E402
 
 
 def dcg(rels, k):

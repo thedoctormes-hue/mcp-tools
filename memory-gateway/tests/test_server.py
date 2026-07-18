@@ -2,7 +2,6 @@
 
 Покрываем счастливые пути и ветки деградации без реальных сетевых вызовов
 (мокаем search.* и requests.get)."""
-import json
 from unittest import mock
 
 import pytest

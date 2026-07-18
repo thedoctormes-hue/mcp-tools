@@ -17,7 +17,7 @@ import time
 SYS_PATH = "/root/LabDoctorM/projects/mcp-tools/memory-gateway"
 sys.path.insert(0, SYS_PATH)
 
-from memory_gateway import server
+from memory_gateway import server  # noqa: E402
 
 ALERT_LOG = "/root/LabDoctorM/.ops/shared/memory-gateway-health/alerts.log"
 LATENCY_P95_THRESHOLD_MS = 2000.0  # порог p95 латентности ALM
