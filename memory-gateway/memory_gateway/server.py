@@ -118,6 +118,11 @@ def gateway_health() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         health["ok"] = False
         health["vector_layer"] = {"reachable": False, "error": str(e)}
+    # P4: ALM call latency telemetry (throttle + health visibility)
+    try:
+        health["latency"] = search.alm_latency_stats()
+    except Exception as e:  # noqa: BLE001
+        health["latency"] = {"error": str(e)}
     health["alm_base"] = config.ALM_BASE
     health["version"] = __import__("memory_gateway").__version__
 

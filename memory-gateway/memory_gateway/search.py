@@ -9,6 +9,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -17,6 +18,14 @@ from . import config
 from .logger import get_logger
 
 log = get_logger()
+
+# P4: throttle concurrent ALM calls (fan-out protection).
+# One semaphore per process: caps simultaneous /vector-search to :3002.
+_ALM_SEM = threading.Semaphore(max(1, int(config.VECTOR_MAX_INFLIGHT)))
+# Lightweight ALM latency telemetry (last/p50/p95 ms), thread-safe.
+_ALM_LATENCY = []
+_ALM_LAT_LOCK = threading.Lock()
+_ALM_LATENCY_MAX = 64
 
 # Маркеры подсветки FTS5-сниппета (〈b〉…〈/b〉). Убираем при извлечении якоря.
 SNIP_OPEN = "\u27e8b\u27e9"
@@ -107,12 +116,19 @@ def workspace_slugs() -> List[str]:
 def _vector_search_one(slug: str, query: str, top_k: int, threshold: float) -> List[Dict[str, Any]]:
     tok = load_token()
     try:
-        r = requests.post(
-            f"{config.ALM_BASE}/workspace/{slug}/vector-search",
-            headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
-            json={"query": query, "topN": top_k, "scoreThreshold": threshold},
-            timeout=config.SEARCH_TIMEOUT,
-        )
+        t0 = time.monotonic()
+        with _ALM_SEM:
+            r = requests.post(
+                f"{config.ALM_BASE}/workspace/{slug}/vector-search",
+                headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+                json={"query": query, "topN": top_k, "scoreThreshold": threshold},
+                timeout=config.SEARCH_TIMEOUT,
+            )
+            dt = (time.monotonic() - t0) * 1000.0
+            with _ALM_LAT_LOCK:
+                _ALM_LATENCY.append(dt)
+                if len(_ALM_LATENCY) > _ALM_LATENCY_MAX:
+                    del _ALM_LATENCY[: len(_ALM_LATENCY) - _ALM_LATENCY_MAX]
         if r.status_code != 200:
             log.warning("vector-search %s -> HTTP %s", slug, r.status_code)
             return []
@@ -394,6 +410,26 @@ def hybrid_search(query: str, top_k: int,
 
 
 # ── get_document: полный сырой текст документа ──────────────────────────
+def alm_latency_stats() -> Dict[str, Any]:
+    """ALM call latency telemetry (P4). Read-only, thread-safe.
+    Returns last/p50/p95 in ms and sample count; None if no samples.
+    """
+    with _ALM_LAT_LOCK:
+        s = list(_ALM_LATENCY)
+    if not s:
+        return {"count": 0, "last_ms": None, "p50_ms": None,
+                "p95_ms": None,
+                "inflight_limit": max(1, int(config.VECTOR_MAX_INFLIGHT))}
+    s.sort()
+    n = len(s)
+    def pct(p):
+        return s[min(n - 1, int(p * n))]
+    return {"count": n,
+            "last_ms": round(s[-1], 1),
+            "p50_ms": round(pct(0.50), 1),
+            "p95_ms": round(pct(0.95), 1),
+            "inflight_limit": max(1, int(config.VECTOR_MAX_INFLIGHT))}
+
 def get_document(doc_id: str, max_chars: int = 20000) -> Dict[str, Any]:
     """Полный сырой текст документа по doc_id.
 
