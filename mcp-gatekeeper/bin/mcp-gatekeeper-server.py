@@ -50,6 +50,11 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent  # mcp-gatekeeper/
 DEFAULT_POLICY = REPO / "policies" / "policy_v1.yaml"
 DEFAULT_DATA = REPO / "data"
+
+# Make the local `gatekeeper` package importable (mcp-gatekeeper/ holds gatekeeper/).
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from gatekeeper.store import LeaseStore, Lease
 GATEKEEPER_VERSION = "1.0.0"
 
 mcp = FastMCP(
@@ -133,40 +138,21 @@ _STOP = threading.Event()
 # --------------------------------------------------------------------------- #
 # Модель данных
 # --------------------------------------------------------------------------- #
-@dataclass
-class Lease:
-    request_id: str
-    agent: str
-    project_id: str
-    kind: str  # "port" | "timer" | "service"
-    port: Optional[int]
-    timer_action: Optional[str]
-    timer_schedule: Optional[str]
-    what_for: str
-    run_as: str
-    issued_user: str
-    acquired_at: float
-    last_heartbeat: float
-    lease_timeout: float
-    bypass: Optional[str] = None  # "root" или None
-    unit: Optional[str] = None    # имя systemd-юнита (заполнение — при интеграции shim, Уровень 1-Г)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-
-
-# --------------------------------------------------------------------------- #
 # Gatekeeper — ядро PDP + состояние + журнал
 # --------------------------------------------------------------------------- #
 class Gatekeeper:
     def __init__(self, policy: Dict[str, Any], data_dir: Path, fail_fast: bool = False):
         self.data_dir = Path(data_dir)
         self.lock = threading.RLock()
-        self.leases: Dict[str, Lease] = {}
         self.policy = policy
         self.fail_fast = fail_fast
         gk = policy.get("gatekeeper", {})
-        self.lease_timeout = float(gk.get("lease_timeout_sec", 300))
+        # ADR-0058 step 2: persistent lease timeout (default 1 day) with
+        # fallback to the legacy 300s key. Prevents leases from expiring on
+        # a service restart / brief outage (grace is applied on load()).
+        self.lease_timeout = float(
+            gk.get("lease_persistent_timeout_sec", gk.get("lease_timeout_sec", 86400))
+        )
         self.heartbeat_interval = float(gk.get("heartbeat_interval_sec", 60))
         self.lease_user = str(gk.get("lease_user", "mcp-gatekeeper"))
         self.allow_root_backdoor = bool(gk.get("allow_root_backdoor", True))
@@ -184,9 +170,18 @@ class Gatekeeper:
         apr = policy.get("gatekeeper", {}).get("allowed_port_range", [1024, 65535])
         self.allowed_port_range = (int(apr[0]), int(apr[1]))
 
+        # ADR-0058 step 1: durable lease store (sqlite) + JSON snapshot mirror.
+        # State lives here, not in a plain dict, so it survives restarts.
+        self.store = LeaseStore(self.data_dir / "leases.db", self.data_dir / "leases.json")
         self._load_state()
         if self.lease_user == "root":
             log("WARN: policy.gatekeeper.lease_user=root — нарушение least-privilege!", logging.WARNING)
+
+    @property
+    def leases(self) -> Dict[str, Lease]:
+        # ADR-0058: live view of the durable store's in-memory cache
+        # (keeps the 43 existing tests working — they read gk.leases).
+        return self.store.all_as_dict()
 
     # ---- загрузка/валидация политики ----
     def validate_policy(self) -> List[str]:
@@ -238,35 +233,14 @@ class Gatekeeper:
         return self.data_dir / "leases.json"
 
     def _load_state(self) -> None:
-        path = self._state_path()
-        if not path.exists():
-            return
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            now = time.time()
-            for rec in data.get("leases", []):
-                try:
-                    l = Lease(**rec)
-                    # graceful: при рестарте считаем lease «свежим» —
-                    # даём агенту время пере-послать heartbeat (иначе reaper освободит).
-                    l.last_heartbeat = now
-                    self.leases[l.request_id] = l
-                except Exception:
-                    continue
-        except Exception:
-            pass
+        # ADR-0058: load durable leases from the store (sqlite + legacy JSON
+        # migration). Each loaded lease gets a grace: last_heartbeat reset to now.
+        self.store.load()
 
     def _save_state(self) -> None:
+        # ADR-0058: mirror current leases to the JSON snapshot.
         try:
-            self.data_dir.mkdir(parents=True, exist_ok=True)
-            tmp = self._state_path().with_suffix(".tmp")
-            payload = {
-                "version": 1,
-                "saved_at": datetime.now(timezone.utc).isoformat(),
-                "leases": [l.to_dict() for l in self.leases.values()],
-            }
-            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self._state_path())
+            self.store.snapshot()
         except Exception as exc:
             log(f"WARN: state save failed: {exc}", logging.WARNING)
 
@@ -328,14 +302,22 @@ class Gatekeeper:
                 return False, f"квота таймеров исчерпана для '{agent}' ({c}/{lim})"
         return True, ""
 
+    def _is_expired(self, l: Lease) -> bool:
+        """Lease считается истёкшим, если по нему не было heartbeat дольше lease_timeout."""
+        return (time.time() - l.last_heartbeat) > l.lease_timeout
+
     def check_dedup_port(self, port: int, agent: str = "") -> Tuple[bool, str]:
         # Ловим ТОЛЬКО перекрёстные претензии: другой агент заявляет тот же порт,
         # что уже занят — это реальный конфликт намерений (squatting). Повторная
         # регистрация тем же агентом (restart сервиса) = refresh, не отказ
         # (ЗавЛаб 12.07). Физические коллизии (два сервиса на один порт) пресекает
         # ядро ОС, не политика.
-        for l in self.leases.values():
+        for l in list(self.leases.values()):
             if l.port == port and l.agent != agent:
+                # ADR-0058 step 3: истёкший чужой lease не блокирует —
+                # считаем порт свободным (разрешаем перерегистрацию).
+                if self._is_expired(l):
+                    continue
                 return False, (
                     f"порт {port} уже заявлен агентом '{l.agent}' "
                     f"(project={l.project_id}, request_id={l.request_id})"
@@ -347,8 +329,11 @@ class Gatekeeper:
         # заявляет тот же action+schedule) — реальный конфликт намерений. Повторная
         # регистрация тем же агентом (restart таймера) = refresh, не отказ
         # (ЗавЛаб 12.07 / Уровень 1-Г).
-        for l in self.leases.values():
+        for l in list(self.leases.values()):
             if l.timer_action == action and l.timer_schedule == schedule and l.agent != agent:
+                # ADR-0058 step 3: истёкший чужой lease не блокирует.
+                if self._is_expired(l):
+                    continue
                 return False, (
                     f"таймер (action={action!r}, schedule={schedule!r}) уже активен "
                     f"у агента '{l.agent}' (request_id={l.request_id})"
@@ -529,10 +514,10 @@ class Gatekeeper:
             # — иначе квота быстро исчерпалась бы на инфра-рестартах.
             for rid, l in list(self.leases.items()):
                 if l.agent == agent and l.port == int(port):
-                    del self.leases[rid]
+                    self.store.delete(rid)
             lease = self._mk_lease(req, "port", int(port), None,
                                    bypass="root" if as_root and self.allow_root_backdoor else None)
-            self.leases[lease.request_id] = lease
+            self.store.put(lease)
             self._save_state()
         self._audit("register_port", req, "ALLOW", reason, lease)
         return self._allow("register_port", lease)
@@ -550,10 +535,10 @@ class Gatekeeper:
             # этим агентом (restart таймера) обновляет lease, а не плодит новые.
             for rid, l in list(self.leases.items()):
                 if l.agent == agent and l.timer_action == action and l.timer_schedule == schedule:
-                    del self.leases[rid]
+                    self.store.delete(rid)
             lease = self._mk_lease(req, "timer", None, dict(action=action, schedule=schedule),
                                    bypass="root" if as_root and self.allow_root_backdoor else None)
-            self.leases[lease.request_id] = lease
+            self.store.put(lease)
             self._save_state()
         self._audit("register_timer", req, "ALLOW", reason, lease)
         return self._allow("register_timer", lease)
@@ -572,10 +557,10 @@ class Gatekeeper:
             # Идемпотентность: refresh того же порта этим агентом.
             for rid, l in list(self.leases.items()):
                 if l.agent == agent and l.port == int(port):
-                    del self.leases[rid]
+                    self.store.delete(rid)
             lease = self._mk_lease(req, "service", int(port), timer,
                                    bypass="root" if as_root and self.allow_root_backdoor else None)
-            self.leases[lease.request_id] = lease
+            self.store.put(lease)
             self._save_state()
         self._audit("register_service", req, "ALLOW", reason, lease)
         return self._allow("register_service", lease)
@@ -589,7 +574,7 @@ class Gatekeeper:
             if by_agent and by_agent != lease.agent:
                 return {"status": "FORBIDDEN", "request_id": request_id,
                         "error": f"только tenant '{lease.agent}' может освободить (вы: '{by_agent}')"}
-            del self.leases[request_id]
+            self.store.delete(request_id)
             self._save_state()
         self.journal(dict(request_id=request_id, when=datetime.now(timezone.utc).isoformat(),
                           what_for=lease.what_for, why="RELEASE", agent=lease.agent,
@@ -604,7 +589,7 @@ class Gatekeeper:
             if not lease:
                 return {"status": "NOT_FOUND", "request_id": request_id}
             lease.last_heartbeat = time.time()
-            self._save_state()
+            self.store.put(lease)
         # heartbeat аудируем облегчённо (rate-limit защищает диск)
         if _rate_limiter.allow():
             self.journal(dict(request_id=request_id, when=datetime.now(timezone.utc).isoformat(),
@@ -627,7 +612,7 @@ class Gatekeeper:
             lease.agent = to_agent
             lease.project_id = project_id
             lease.last_heartbeat = time.time()
-            self._save_state()
+            self.store.put(lease)
         self.journal(dict(request_id=request_id, when=datetime.now(timezone.utc).isoformat(),
                           what_for=lease.what_for, why="HANDOFF", agent=f"{old_agent}->{to_agent}",
                           project=project_id, action="transfer", by=by_agent or old_agent))
@@ -835,7 +820,7 @@ class Gatekeeper:
         with self.lock:
             for rid, l in list(self.leases.items()):
                 if now - l.last_heartbeat > l.lease_timeout:
-                    del self.leases[rid]
+                    self.store.delete(rid)
                     released.append(rid)
                     self.journal(dict(request_id=rid, when=datetime.now(timezone.utc).isoformat(),
                                       what_for=l.what_for, why="LEASE_TIMEOUT", agent=l.agent,
@@ -1073,7 +1058,7 @@ def _reaper_loop() -> None:
             GK.reaper_tick()
         except Exception as exc:
             log(f"WARN: reaper error: {exc}", logging.WARNING)
-        _STOP.wait(max(5.0, GK.lease_timeout / 10.0))
+        _STOP.wait(max(5.0, min(GK.lease_timeout / 10.0, 60.0)))
 
 
 def _fact_capture_loop() -> None:

@@ -14,6 +14,11 @@ Infra-reserved (reserve.blocked_ports, ADR-0056 SSOT): 8080 nginx, 8090 hunter, 
 """
 
 import pytest
+import time
+
+# Helpers to build a *second* Gatekeeper instance on the same data dir
+# (used to emulate a service restart in the persistence tests below).
+from conftest import load_module, load_policy
 
 
 def _req(**kw):
@@ -327,3 +332,48 @@ def test_suggest_free_port_global_range(gk):
     assert lo <= sug <= hi
     assert sug >= int(gk.reserve.get("block_privileged_below", 1024))
     assert sug not in gk.reserve.get("blocked_ports", [])
+
+
+# --------------------------------------------------------------------------- #
+# ADR-0058 — persistence & dedup fixes
+# --------------------------------------------------------------------------- #
+
+def test_lease_persists_beyond_300s(gk):
+    # Step 2: default lease_timeout is now 1 day, not the legacy 300s.
+    assert gk.lease_timeout == 86400
+    reg = gk.register_port("raven", "projA", 8085, "long-lived svc")
+    rid = reg["request_id"]
+    lease = gk.leases[rid]
+    # Сдвинем last_heartbeat на 310с назад (старый дефолт 300с бы его снял).
+    lease.last_heartbeat = time.time() - 310
+    released = gk.reaper_tick()
+    assert rid not in released
+    assert gk.leases.get(rid) is not None
+
+
+def test_lease_survives_restart(gk):
+    # Step 1: lease persisted to sqlite survives a process restart.
+    reg = gk.register_port("raven", "projA", 8085, "persistent svc")
+    rid = reg["request_id"]
+    port = reg["port"]
+    # Эмулируем restart: новый Gatekeeper на тот же data_dir.
+    gk.store.close()
+    mod = load_module()
+    policy = load_policy()
+    gk2 = mod.Gatekeeper(policy, gk.data_dir, fail_fast=False)
+    assert rid in gk2.leases
+    assert gk2.leases[rid].port == port
+    assert gk2.leases[rid].agent == "raven"
+    gk2.store.close()
+
+
+def test_expired_lease_dedup_allows_reregister(gk):
+    # Step 3: истёкший чужой lease не блокирует перерегистрацию.
+    reg = gk.register_port("antcat", "projA", 8155, "svc by antcat")
+    rid = reg["request_id"]
+    lease = gk.leases[rid]
+    # Сделаем lease истёкшим (давно не было heartbeat).
+    lease.last_heartbeat = time.time() - (lease.lease_timeout + 10)
+    # Другой агент должен спокойно занять тот же порт (даже без reaper).
+    res = gk.register_port("raven", "projB", 8155, "svc by raven")
+    assert res["status"] == "ALLOW", res
