@@ -1,0 +1,51 @@
+# allowed_ports.txt — Слой 0 (ADR-0058 band-aid): известные инфра-порты лаборатории.
+# Это легитимные слушающие порты, которые НЕ регистрируются в привратнике
+# (Docker/direct биндят в обход systemd-shim, либо lease-стор пуст из-за
+# короткого lease_timeout). Аудит НЕ алертит порты из этого списка.
+# ПРАВИЛЬНОЕ решение: наполнить lease-стор (persistence + регистрация портов),
+# после чего этот файл можно сократить/убрать.
+# Формат: один порт на строку; строки с # — комментарии.
+# Обновлено: 2026-07-18 (raven)
+
+# Системные / привилегированные (<1024 всё равно авто-разрешены, но для ясности):
+80
+443
+2222
+
+# Gatekeeper собственный + инфра-резерв:
+3001   # myrmex-control (перенесён с заблокированного 3000)
+3002   # docker-proxy (anythingllm)
+8888   # mcp-gatekeeper (listen_port, уже в policy)
+
+# Базы и кэш:
+5432   # postgres
+5433   # postgres (второй инстанс/контейнер)
+6379   # redis
+6380   # docker-proxy (redis/другой контейнер)
+
+# Веб / прокси / app-контейнеры:
+8000   # docker-proxy (контейнер)
+8001   # python (сервис)
+8080   # nginx
+8086   # mcp-apikeys
+8089   # mcp-lab-research (python3)
+8090   # hunter
+8091   # memory-gateway (run.py) — канон семпамяти ALM+MCP
+8099   # uvicorn
+8200   # uvicorn
+8202   # mail-daemon-go
+8300   # consilium
+8443   # nginx
+8444   # chisel
+8445   # nginx
+8889   # docker-proxy (searxng)
+8899   # python3 (сервис)
+9090   # sshd (alt)
+9100   # node_exporter
+9187   # postgres_export
+9443   # docker-proxy (контейнер)
+10443  # xray
+18443  # nginx (vhost/stream)
+18789  # MainThread (сервис)
+36401  # containerd
+46199  # containerd (Docker runtime) — легитимный системный порт, не агент

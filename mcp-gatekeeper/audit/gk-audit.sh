@@ -96,6 +96,24 @@ if [[ -f "$LEASES_FILE" ]]; then
     | "\(.port)"' "$LEASES_FILE" 2>/dev/null)
 fi
 
+# --- Слой 0 (ADR-0058 band-aid): известные инфра-порты ---
+# Порты из allowed_ports.txt НЕ алертятся (легит, но не регистрируются в GK:
+# Docker/direct биндят в обход shim, либо lease-стор пуст из-за короткого
+# lease_timeout). Правильное решение — наполнить lease-стор (persistence +
+# регистрация), после чего этот список сокращается. Чужой/новый порт вне
+# списка и вне leases — всё равно алертится.
+ALLOW_LIST="${GK_ALLOW_PORTS:-$SCRIPT_DIR/allowed_ports.txt}"
+if [[ -f "$ALLOW_LIST" ]]; then
+  while IFS= read -r _p; do
+    _p="${_p%%#*}"            # отсечь inline-комментарий
+    _p="$(echo "$_p" | tr -d '[:space:]')"
+    [[ -z "$_p" ]] && continue
+    if [[ "$_p" =~ ^[0-9]+$ ]]; then
+      ALLOWED[$_p]=1
+    fi
+  done < "$ALLOW_LIST"
+fi
+
 # --- сканировать слушающие TCP-порты (ss -tlnp; хедер дропаем tail -n +2) ---
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
@@ -115,7 +133,7 @@ while IFS= read -r line; do
   if [[ "$allowed" -eq 0 ]]; then
     ALERTS=$((ALERTS + 1))
     # разбор ss-строки в человекочитаемый вид
-    local addrport bind_addr proc_name proc_pid human_detail
+    # addrport bind_addr proc_name proc_pid human_detail
     addrport="$(echo "$line" | awk '{print $4}')"
     bind_addr="$(echo "$addrport" | awk -F: '{print $1}')"
     proc_name="$(echo "$line" | grep -oE 'users:\(\("[^"]+"' | head -1 | sed -E 's/^users:\(\("//; s/"$//')"
