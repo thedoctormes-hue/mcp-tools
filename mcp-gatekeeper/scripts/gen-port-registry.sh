@@ -72,7 +72,6 @@ declare -A LABEL=(
   [9443]="reserved (infra)"
   [10443]="reserved (infra)"
   [18789]="reserved (infra)"
-  [36401]="reserved (infra)"
 )
 
 # отсортированный список портов
