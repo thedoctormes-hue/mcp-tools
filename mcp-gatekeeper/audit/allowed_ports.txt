@@ -30,6 +30,7 @@
 8086   # mcp-apikeys
 8089   # mcp-lab-research (python3)
 8090   # hunter
+8091   # memory-gateway (run.py) — канон семпамяти ALM+MCP
 8099   # uvicorn
 8200   # uvicorn
 8202   # mail-daemon-go
