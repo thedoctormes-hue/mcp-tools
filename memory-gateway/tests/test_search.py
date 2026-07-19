@@ -159,6 +159,52 @@ def test_expand_result_unknown_doc_stays_false(temp_lexical):
     assert res.get("context_expanded") is False
 
 
+# ── D1: workspace-routing (регресс на 'str' object has no attribute 'get') ──
+def test_workspace_slugs_for_query_dict_map(monkeypatch):
+    """workspace_map.json — dict {slug:{topics,source}}; итерация не должна падать
+    и должна возвращать слаги по совпадению topics."""
+    fake_map = {
+        "lab-memory": {"topics": ["дедлок", "эмбеддинг"], "source": "x"},
+        "weather": {"topics": ["погода"], "source": "x"},
+    }
+    monkeypatch.setattr(search, "_WORKSPACE_MAP", fake_map)
+    slugs = search.workspace_slugs_for_query("вопрос про дедлок в очереди")
+    assert slugs == ["lab-memory"]
+
+
+def test_workspace_slugs_for_query_dict_no_match_falls_back(monkeypatch):
+    fake_map = {"lab-memory": {"topics": ["дедлок"], "source": "x"}}
+    monkeypatch.setattr(search, "_WORKSPACE_MAP", fake_map)
+    monkeypatch.setattr(search, "workspace_slugs", lambda: ["all-a", "all-b"])
+    slugs = search.workspace_slugs_for_query("совершенно посторонняя тема")
+    assert slugs == ["all-a", "all-b"]
+
+
+def test_workspace_slugs_for_query_legacy_list_map(monkeypatch):
+    """Defensive: старый формат — список dict'ов."""
+    fake_map = [{"slug": "lab-memory", "topics": ["дедлок"]}]
+    monkeypatch.setattr(search, "_WORKSPACE_MAP", fake_map)
+    slugs = search.workspace_slugs_for_query("про дедлок")
+    assert slugs == ["lab-memory"]
+
+
+def test_vector_search_one_skips_non_dict_result(monkeypatch):
+    """Если ALM вернёт строку в results[], слой не падает, а пропускает её."""
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"results": [
+                "битая строка вместо dict",
+                {"text": "ok", "score": 0.7, "metadata": {"title": "T.md"}},
+            ]}
+    monkeypatch.setattr(search.requests, "post", lambda *a, **k: FakeResp())
+    monkeypatch.setattr(search, "load_token", lambda: "tok")
+    out = search._vector_search_one("lab-memory", "q", 5, 0.0)
+    assert len(out) == 1
+    assert out[0]["title"] == "T.md"
+    assert out[0]["vector_score"] == 0.7
+
+
 # ── Гибрид с моком векторного слоя (сеть не трогаем) ─────────────────────
 def test_hybrid_degraded_when_vector_fails(temp_lexical, monkeypatch):
     def boom(*a, **k):
