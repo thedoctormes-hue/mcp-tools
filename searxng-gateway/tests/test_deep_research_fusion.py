@@ -4,7 +4,6 @@
 (answer), и семпамять лабы (semantic_memory), с грациозной деградацией
 каждого слоя. hybrid_search мокается — тест не зависит от живого ALM.
 """
-import subprocess
 from unittest import mock
 
 from searxng_gateway import server
