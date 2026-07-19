@@ -114,6 +114,16 @@ if [[ -f "$ALLOW_LIST" ]]; then
   done < "$ALLOW_LIST"
 fi
 
+# --- Слой 0.5 (ADR-0058 follow-up): доверенные системные процессы ---
+# Порты, биндуемые системными демонами (containerd/dockerd/...), ЭФЕМЕРНЫ и
+# легитимны: рантайм контейнеров не регистрирует их в привратнике, и алертить
+# их - бесконечные кошки-мышки (было 36401 -> 46199 -> 39727). Exemption даётся
+# НЕ по номеру порта, а по РЕАЛЬНОМУ бинарю владельца сокета (/proc/$pid/exe),
+# что устойчиво и к смене эфемерного порта, и к spoofing comm-имени процесса.
+# Формат trusted_procs.txt: полный путь к бинарю на строку (glob, напр.
+# /usr/bin/docker*). Строки с # - комментарий.
+TRUSTED_PROCS="${GK_TRUSTED_PROCS:-$SCRIPT_DIR/trusted_procs.txt}"
+
 # --- сканировать слушающие TCP-порты (ss -tlnp; хедер дропаем tail -n +2) ---
 while IFS= read -r line; do
   [[ -z "$line" ]] && continue
@@ -138,6 +148,29 @@ while IFS= read -r line; do
     bind_addr="$(echo "$addrport" | awk -F: '{print $1}')"
     proc_name="$(echo "$line" | grep -oE 'users:\(\("[^"]+"' | head -1 | sed -E 's/^users:\(\("//; s/"$//')"
     proc_pid="$(echo "$line" | grep -oE 'pid=[0-9]+' | head -1 | sed -E 's/pid=//')"
+
+    # --- Слой 0.5: exemption по доверенному системному процессу ---
+    # Сверяем РЕАЛЬНЫЙ бинарь (/proc/$pid/exe), не comm (spoofable). Владелец
+    # сокета - доверенный демон => порт НЕ алертится (вне зависимости от номера).
+    _exempt=0
+    if [[ -n "$proc_pid" && -f "$TRUSTED_PROCS" ]]; then
+      exe="$(readlink -f "/proc/$proc_pid/exe" 2>/dev/null || true)"
+      if [[ -n "$exe" ]]; then
+        while IFS= read -r _bin; do
+          _bin="${_bin%%#*}"; _bin="$(echo "$_bin" | tr -d '[:space:]')"
+          [[ -z "$_bin" ]] && continue
+          if [[ "$exe" == $_bin ]]; then
+            _exempt=1
+            break
+          fi
+        done < "$TRUSTED_PROCS"
+      fi
+    fi
+    if [[ "$_exempt" -eq 1 ]]; then
+      ALERTS=$((ALERTS - 1))
+      continue
+    fi
+
     if [[ -n "$proc_name" ]]; then
       human_detail="порт $port на $bind_addr: слушает $proc_name"
       [[ -n "$proc_pid" ]] && human_detail="$human_detail [pid $proc_pid]"
