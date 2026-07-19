@@ -143,13 +143,23 @@ def workspace_slugs_for_query(query: str) -> List[str]:
     wmap = _load_workspace_map()
     if not wmap:
         return workspace_slugs()
+    # workspace_map.json format: dict {slug: {"topics": [...], "source": ...}}.
+    # Legacy/defensive: also accept list of {"slug":..., "topics":...} dicts.
+    if isinstance(wmap, dict):
+        entries = [
+            {"slug": slug, "topics": (meta or {}).get("topics", [])
+                if isinstance(meta, dict) else []}
+            for slug, meta in wmap.items()
+        ]
+    else:
+        entries = [ws for ws in wmap if isinstance(ws, dict)]
     matched = []
-    for ws in wmap:
+    for ws in entries:
         slug = ws.get("slug")
         if not slug:
             continue
-        topics = ws.get("topics", [])
-        if any(topic.lower() in q_lower for topic in topics):
+        topics = ws.get("topics", []) or []
+        if any(str(topic).lower() in q_lower for topic in topics):
             matched.append(slug)
     if matched:
         return sorted(set(matched))
@@ -180,6 +190,10 @@ def _vector_search_one(slug: str, query: str, top_k: int, threshold: float) -> L
             return []
         out = []
         for res in r.json().get("results", []):
+            if not isinstance(res, dict):
+                log.warning("vector-search %s: unexpected result type %s",
+                            slug, type(res).__name__)
+                continue
             meta = res.get("metadata", {}) or {}
             title = meta.get("title") or meta.get("docSource") or "?"
             out.append({

@@ -118,6 +118,24 @@ def gateway_health() -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001
         health["ok"] = False
         health["vector_layer"] = {"reachable": False, "error": str(e)}
+    # HONEST probe: reachable+vector_count врут, если поисковый путь падает.
+    # Дёргаем реальный гибридный поиск и смотрим, вернул ли векторный слой хиты.
+    try:
+        probe = search.hybrid_search("тест семантической памяти", top_k=3,
+                                     expand_context=False)
+        vec_hits = int(probe.get("layers", {}).get("vector", 0))
+        vl_ok = health.get("vector_layer", {}).get("reachable", False)
+        health["vector_search"] = {
+            "functional": vec_hits > 0,
+            "vector_hits": vec_hits,
+            "degraded": bool(probe.get("degraded")),
+        }
+        if vl_ok and vec_hits == 0:
+            health["ok"] = False
+            health["vector_layer"]["functional"] = False
+    except Exception as e:  # noqa: BLE001
+        health["ok"] = False
+        health["vector_search"] = {"functional": False, "error": str(e)}
     # P4: ALM call latency telemetry (throttle + health visibility)
     try:
         health["latency"] = search.alm_latency_stats()
@@ -135,6 +153,12 @@ def gateway_health() -> Dict[str, Any]:
     vl = health.get("vector_layer", {})
     if not vl.get("reachable"):
         problems.append("векторный слой недоступен")
+    vs = health.get("vector_search", {})
+    if vl.get("reachable") and not vs.get("functional", True):
+        problems.append(
+            "векторный поиск не работает (индекс есть, но поиск отдаёт 0 хитов) "
+            "— семантическая память деградировала до лексической"
+        )
     ws = health.get("workspaces", {})
     if "error" in ws:
         problems.append("ошибка перечисления workspace")
