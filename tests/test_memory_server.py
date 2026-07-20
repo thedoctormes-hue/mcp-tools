@@ -12,7 +12,6 @@ controlled via ``os.path.getmtime`` monkeypatching.
 """
 
 import importlib.util
-import os
 import threading
 from pathlib import Path
 from unittest import mock
@@ -45,21 +44,21 @@ def mod():
 
 def test_disk_index_changed_false_when_disk_same_or_older(mod):
     # disk mtime <= in-memory -> no change
-    with mock.patch("os.path.getmtime", return_value=100.0):
+    with mock.patch("os.path.exists", return_value=True), mock.patch("os.path.getmtime", return_value=100.0):
         assert mod._disk_index_changed() is False
-    with mock.patch("os.path.getmtime", return_value=50.0):
+    with mock.patch("os.path.exists", return_value=True), mock.patch("os.path.getmtime", return_value=50.0):
         assert mod._disk_index_changed() is False
 
 
 def test_disk_index_changed_true_when_disk_newer(mod):
-    with mock.patch("os.path.getmtime", return_value=200.0):
+    with mock.patch("os.path.exists", return_value=True), mock.patch("os.path.getmtime", return_value=200.0):
         assert mod._disk_index_changed() is True
 
 
 def test_ensure_fresh_skips_reload_when_unchanged(mod):
     calls = []
     mod.load_index = lambda: calls.append(1) or True
-    with mock.patch("os.path.getmtime", return_value=100.0):
+    with mock.patch("os.path.exists", return_value=True), mock.patch("os.path.getmtime", return_value=100.0):
         result = mod._ensure_fresh_index()
     assert result is False
     assert calls == []  # reload NOT triggered
@@ -76,7 +75,7 @@ def test_ensure_fresh_reloads_once_when_disk_newer(mod):
         return True
 
     mod.load_index = fake_load
-    with mock.patch("os.path.getmtime", return_value=200.0):
+    with mock.patch("os.path.exists", return_value=True), mock.patch("os.path.getmtime", return_value=200.0):
         result = mod._ensure_fresh_index()
     assert result is True
     assert calls == [1]  # exactly one reload
@@ -101,7 +100,7 @@ def test_ensure_fresh_concurrent_no_double_reload(mod):
         barrier.wait()  # both threads enter together
         mod._ensure_fresh_index()
 
-    with mock.patch("os.path.getmtime", return_value=200.0):
+    with mock.patch("os.path.exists", return_value=True), mock.patch("os.path.getmtime", return_value=200.0):
         t1 = threading.Thread(target=worker)
         t2 = threading.Thread(target=worker)
         t1.start()

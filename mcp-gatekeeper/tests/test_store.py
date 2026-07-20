@@ -8,9 +8,7 @@ live filesystem.
 
 import json
 import time
-from pathlib import Path
 
-import pytest
 
 from gatekeeper.store import Lease, LeaseStore
 

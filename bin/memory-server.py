@@ -19,7 +19,6 @@ memory-server.py — STATEFUL MCP-фасад над FAISS/ONNX.
 Порт: MCP_PORT (default 8087).
 """
 import os
-import sys
 import json
 import time
 import re
