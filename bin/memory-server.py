@@ -203,12 +203,12 @@ def search_faiss(query: str, top_k: int, threshold: float,
         # При фильтрах ищем шире, чтобы post-filter не отсёк релевантное
         has_filter = any([agent, project, source, date])
         search_k = min(idx.ntotal, 500) if has_filter else top_k * 3
-        D, I = idx.search(q, search_k)
+        D, Idx = idx.search(q, search_k)
     except Exception:
         return None
     results = []
     seen = 0
-    for score, i in zip(D[0], I[0]):
+    for score, i in zip(D[0], Idx[0]):
         if i < 0:
             continue
         chunk = meta[i] if isinstance(meta, list) else meta.get(str(i), meta.get(i))
@@ -557,23 +557,27 @@ def _idle_shutdown_watchdog():
             os._exit(0)  # юнит Restart=no не воскрешает
 
 
-import http.server
-import socketserver
-from urllib.parse import urlparse, parse_qs
+import http.server  # noqa: E402
+import socketserver  # noqa: E402
+from urllib.parse import urlparse, parse_qs  # noqa: E402
 
 
 def _metrics_text() -> str:
     with _state_lock:
-        req = _state["requests"]; hits = _state["cache_hits"]
-        misses = _state["cache_misses"]; deg = _state["degraded_total"]
-        idx = _state["index"]; lats = list(_state["latencies"])
+        req = _state["requests"]
+        hits = _state["cache_hits"]
+        misses = _state["cache_misses"]
+        deg = _state["degraded_total"]
+        idx = _state["index"]
+        lats = list(_state["latencies"])
         ready = int(bool(_state["ready"]))
     # _disk_index_changed() сам берёт _state_lock -> вызываем ВНЕ лока,
     # иначе re-entrant deadlock (threading.Lock не реентерабелен).
     stale = int(_disk_index_changed())
     p95 = 0.0
     if lats:
-        sl = sorted(lats); p95 = sl[min(int(len(sl) * 0.95), len(sl) - 1)]
+        sl = sorted(lats)
+        p95 = sl[min(int(len(sl) * 0.95), len(sl) - 1)]
     return (
         f"mcp_up 1\n"
         f"mcp_ready {ready}\n"
@@ -598,14 +602,18 @@ class _MetricsHandler(http.server.BaseHTTPRequestHandler):
                     "index_ntotal": _state["index"].ntotal if _state["index"] else 0,
                     "degraded_total": _state["degraded_total"],
                 }).encode()
-            self.send_response(200); self.send_header("Content-Type", "application/json")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
         elif p == "/metrics":
             body = _metrics_text().encode()
-            self.send_response(200); self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
         else:
-            body = b'{"error":"not found"}'; self.send_response(404)
+            body = b'{"error":"not found"}'
+            self.send_response(404)
             self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body))); self.end_headers()
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
         self.wfile.write(body)
     def log_message(self, *a):
         pass
@@ -616,7 +624,8 @@ def _start_metrics_server():
         return
     socketserver.TCPServer.allow_reuse_address = True
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", METRICS_PORT), _MetricsHandler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True); t.start()
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
 
 
 # ── Startup-brief side-car HTTP (Tier 1): ретаргетинг startupContext на индекс ──
