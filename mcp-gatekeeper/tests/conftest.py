@@ -15,6 +15,7 @@ Set GATEKEEPER_SERVER_PATH to point the suite at an alternate server file
 import importlib.util
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,9 @@ except Exception:  # pragma: no cover
     yaml = None
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Allow tests to import the gatekeeper package directly (e.g. gatekeeper.store).
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 _SERVER_ENV = os.environ.get("GATEKEEPER_SERVER_PATH")
 SERVER_PATH = Path(_SERVER_ENV) if _SERVER_ENV else (PROJECT_ROOT / "bin" / "mcp-gatekeeper-server.py")
 POLICY_PATH = PROJECT_ROOT / "policies" / "policy_v1.yaml"

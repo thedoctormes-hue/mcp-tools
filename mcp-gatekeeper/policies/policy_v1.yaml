@@ -26,6 +26,9 @@ gatekeeper:
 
   # Lease: аренда ресурса агентом. Если heartbeat не приходит за lease_timeout_sec,
   # ресурс автоматически освобождается (lease-таймаут -> освобождение).
+  # ADR-0058 step 2: persistent lease timeout (1 сутки) — leases больше не
+  # протухают за 300с при перезапуске/кратковременном простое сервиса.
+  lease_persistent_timeout_sec: 86400
   lease_timeout_sec: 300
   # Ожидаемый интервал heartbeat (для диагностики/логов).
   heartbeat_interval_sec: 60

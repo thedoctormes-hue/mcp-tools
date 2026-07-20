@@ -12,7 +12,7 @@ ALM_BASE = os.environ.get("MG_ALM_BASE", "http://127.0.0.1:3002/api/v1")
 # Системный Bearer-токен AnythingLLM для vector-search.
 TOKEN_FILE = os.environ.get(
     "MG_TOKEN_FILE",
-    "/root/LabDoctorM/workspaces/streikbrecher/secrets/anythingllm_token.txt",
+    "/root/LabDoctorM/vault/anythingllm_token.txt",
 )
 
 # ── Операционная директория (лексический слой) ─────────────────────────
@@ -24,7 +24,7 @@ LEXICAL_DB = os.environ.get("MG_LEXICAL_DB", os.path.join(OPS_DIR, "lexical.db")
 # Локальный список слагов workspace (быстрее и без прав на /workspaces).
 MAP_FILE = os.environ.get(
     "MG_MAP_FILE",
-    "/root/LabDoctorM/workspaces/streikbrecher/secrets/anythingllm_workspaces.map",
+    "/root/LabDoctorM/vault/anythingllm_workspaces.map",
 )
 
 # ── Таймауты (сек) ─────────────────────────────────────────────────────
