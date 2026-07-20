@@ -13,12 +13,10 @@ Scope: unit-level logic only. Live MCP servers are NOT started in tests
 """
 
 import importlib.util
-import os
 import sys
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 APIKEYS = REPO_ROOT / "bin" / "apikeys-server.py"

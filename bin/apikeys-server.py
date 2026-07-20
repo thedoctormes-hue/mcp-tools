@@ -24,7 +24,7 @@ import sqlite3
 import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from mcp.server.fastmcp import FastMCP
 
 # --- Configuration ---
@@ -377,12 +377,12 @@ def get_provider_docs(provider: str) -> Dict[str, Any]:
         docs += f"## Status: {provider_info.get('status', 'unknown')}\n\n"
         docs += f"**URL:** {provider_info.get('url', 'N/A')}\n\n"
         if provider_info.get('models'):
-            docs += f"**Models:**\n"
+            docs += "**Models:**\n"
             for m in provider_info['models']:
                 docs += f"- `{m}`\n"
             docs += "\n"
         if provider_info.get('limits'):
-            docs += f"**Limits:**\n"
+            docs += "**Limits:**\n"
             for k, v in provider_info['limits'].items():
                 docs += f"- {k}: {v}\n"
             docs += "\n"

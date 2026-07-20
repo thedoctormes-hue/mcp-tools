@@ -101,7 +101,7 @@ def _try_stop() -> None:
 
 
 def _operator_instruction():
-    print(f"⚠️ heartbeat-сервер недоступен (127.0.0.1:8088) — ДЛЯ ОПЕРАТОРА:")
+    print("⚠️ heartbeat-сервер недоступен (127.0.0.1:8088) — ДЛЯ ОПЕРАТОРА:")
     print(f"Поднять вручную: systemctl start {SERVICE}")
     print(f"Перепроверить: python3 {os.path.abspath(__file__)} {AGENT}")
 
