@@ -47,5 +47,6 @@
 10443  # xray
 18443  # nginx (vhost/stream)
 18789  # MainThread (сервис)
+18799  # OpenClaw gateway runtime (MainThread, node)
 # 36401 / 46199 - ранее containerd (эфемерные). Теперь покрываются через
 # trusted_procs.txt (Слой 0.5): exemption по процессу, а не по порту.
