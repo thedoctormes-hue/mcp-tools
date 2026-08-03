@@ -8,6 +8,9 @@
 
 # Container runtime - эфемерные CRI/streaming/metrics порты:
 /usr/bin/containerd
+# Docker daemon + docker-proxy — эфемерные host-порты контейнеров (решение 2026-08-03, raven, INC-20260803-0030):
+/usr/bin/dockerd
+/usr/bin/docker-proxy
 
 # (опционально) Docker daemon - эфемерные порты того же семейства:
 # /usr/bin/dockerd
