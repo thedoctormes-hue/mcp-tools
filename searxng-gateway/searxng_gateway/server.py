@@ -269,7 +269,10 @@ def deep_research(query: str, count: int = 10) -> Dict[str, Any]:
 
 def main():
     """Точка входа для CLI (pyproject.toml script)."""
-    mcp.run(transport="stdio")
+    transport = os.getenv("SEARXNG_TRANSPORT", "stdio")
+    while True:
+        mcp.run(transport=transport)
+        time.sleep(1)
 
 
 if __name__ == "__main__":
