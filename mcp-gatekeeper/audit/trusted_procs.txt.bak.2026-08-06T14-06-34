@@ -14,11 +14,3 @@
 
 # (опционально) Docker daemon - эфемерные порты того же семейства:
 # /usr/bin/dockerd
-
-# OpenClaw runtime-agent agy — эфемерные loopback-порты для
-# inter-session transport (fd=listen socket / fd=inter-session bridge).
-# agy биндит порты ВНЕ systemd-shim (runtime-агент), поэтому они не попадают
-# в leases.json и НЕ должны аллертиться при каждом spawn. Exemption по РЕАЛЬНОМУ
-# бинарю (/proc/$pid/exe) поглощает все efemerent agy-порты без кошек-мышек
-# (raw list: 37433, 33625 → следующий spawn даст новые). Добавлено 2026-08-06 (raven).
-/root/.local/bin/agy

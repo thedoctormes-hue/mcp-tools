@@ -1,6 +1,3 @@
-<!-- SEMDEP -->
-> ⚠️ **НЕАКТУАЛЬНО / SUPERSEDED (RUL-010).** Документ описывает пре-ALM стек семантической памяти лаборатории: `lab_search.py` / `labsearch` / `onnx-embedder :8082` / `mcp-memory :8087` / `Context API :8100` / FAISS+ONNX / прямые вызовы ALM `:3002`. Все эти пути **УДАЛЕНЫ и ЗАПРЕЩЕНЫ** с 15.07.2026. Единственный рабочий путь семантической памяти — MCP-инструмент **`memory-gateway__search_memory`** (сервер `memory-gateway`, 127.0.0.1:8091, бэкенд ALM/AnythingLLM). Описанные здесь команды/порты/сервисы — НЕ рабочие; не используйте их. Код, всё ещё ссылающийся на этот стек, — устаревшая (stale) зависимость, требует миграции на `memory-gateway__search_memory` (эскалация ЗавЛабу).
-
 # PORT_REGISTRY.md — AUTO-GENERATED (Уровень Е ADR-0056)
 
 > **НЕ РЕДАКТИРУЙ ВРУЧНУЮ.** Этот файл генерируется
@@ -22,9 +19,15 @@ Read-only вид зарезервированных/ожидаемых порт�
 
 | Port | Service | Notes |
 |------|---------|-------|
+| 06 | reserved/infra |  |
+| 6 | reserved/infra |  |
+| 08 | reserved/infra |  |
+| 0055 | reserved/infra |  |
 | 80 | reserved/infra |  |
 | 443 | https (infra) |  |
+| 2026 | reserved/infra |  |
 | 2222 | reserved/infra |  |
+| 2225 | reserved/infra |  |
 | 3000 | grafana (infra) |  |
 | 3002 | reserved/infra |  |
 | 5432 | PostgreSQL (infra) |  |
@@ -34,15 +37,17 @@ Read-only вид зарезервированных/ожидаемых порт�
 | 8086 | mcp-apikeys (infra) |  |
 | 8087 | mcp-memory (infra) |  |
 | 8090 | reserved (infra) |  |
+| 8092 | reserved/infra |  |
 | 8099 | reserved (infra) |  |
+| 8190 | reserved/infra |  |
 | 8200 | reserved (infra) |  |
 | 8202 | reserved (infra) |  |
 | 8300 | reserved (infra) |  |
+| 8301 | reserved/infra |  |
 | 8443 | reserved (infra) |  |
 | 8444 | reserved (infra) |  |
 | 8445 | reserved (infra) |  |
 | 8888 | mcp-gatekeeper (listen_port) | собственный порт PDP (listen_port) |
-| 8889 | reserved (infra) |  |
 | 8899 | reserved (infra) |  |
 | 9090 | Prometheus (infra) |  |
 | 9100 | node_exporter (infra) |  |
@@ -50,6 +55,8 @@ Read-only вид зарезервированных/ожидаемых порт�
 | 9443 | reserved (infra) |  |
 | 10443 | reserved (infra) |  |
 | 18789 | reserved (infra) |  |
+| 34152 | reserved/infra |  |
+| 58436 | reserved/infra |  |
 
 ## Как обновить
 
